@@ -1,4 +1,4 @@
-# Superwhisper clone
+# Ottotone
 
 A simple voice-to-text transcription tool that uses OpenAI's Whisper model. Just press Cmd+Control+R, speak, and your transcribed text will be automatically copied to your clipboard.
 
@@ -8,7 +8,7 @@ A simple voice-to-text transcription tool that uses OpenAI's Whisper model. Just
 - 🔊 Automatic silence detection
 - 📋 Instant clipboard copy
 - 🎯 Optimized for macOS
-- 📱 Native macOS app with beautiful icon
+- 📱 Native macOS app
 
 ## Requirements
 
@@ -21,8 +21,8 @@ A simple voice-to-text transcription tool that uses OpenAI's Whisper model. Just
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/superwhisper.git
-cd superwhisper
+git clone https://github.com/yourusername/ottotone.git
+cd ottotone
 ```
 
 2. Run the setup script:
@@ -32,7 +32,7 @@ bash setup.sh
 ```
 
 3. Choose your preferred way to run:
-   - **As a macOS app**: The setup script will offer to install Superwhisper to your Applications folder
+   - **As a macOS app**: The setup script will offer to install Ottotone to your Applications folder
    - **From terminal**: Run `./run.sh`
 
 That's it! Press Cmd+Control+R to start recording, speak your text, and wait for silence or press Cmd+Control+R again to stop. The transcribed text will be automatically copied to your clipboard.
@@ -50,29 +50,29 @@ That's it! Press Cmd+Control+R to start recording, speak your text, and wait for
 ### 1. As a macOS App
 
 - During setup, choose 'y' when asked to install to Applications
-- Find Superwhisper in your Applications folder
+- Find Ottotone in your Applications folder
 - Launch like any other macOS app
 - Grant microphone permissions when prompted
 
 ### 2. From Terminal
 
 - After setup, run: `./run.sh`
-- Or use the built app directly: `open dist/Superwhisper.app`
+- Or use the built app directly: `open dist/Ottotone.app`
 
 ## Troubleshooting
 
 If you encounter any issues:
 
 1. Make sure your microphone is working and properly selected in System Settings
-2. Check that you have granted microphone permissions to Superwhisper
-3. Look at the `superwhisper.log` file for detailed error messages
+2. Check that you have granted microphone permissions to Ottotone
+3. Look at the `ottotone.log` file for detailed error messages
 4. Try running the setup script again: `bash setup.sh`
 
 ## Development
 
 - Python 3.11 (managed in virtual environment)
 - Uses OpenAI's Whisper model for transcription
-- Includes test suite: `source venv/bin/activate && python3 -m unittest test_superwhisper.py -v`
+- Includes test suite: `source venv/bin/activate && python3 -m unittest test_ottotone.py -v`
 - Built with PyInstaller for native macOS app
 
 ## License

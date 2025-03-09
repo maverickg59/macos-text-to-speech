@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Superwhisper - Voice-to-text transcription tool using OpenAI's Whisper
+# Ottotone - Voice-to-text transcription tool using OpenAI's Whisper
 # This application uses a global Cmd+Control+R hotkey to record audio,
 # automatically stops on silence, and puts transcribed text on the clipboard.
 
@@ -23,10 +23,10 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),  # Console output
-        logging.FileHandler('superwhisper.log')  # File output
+        logging.FileHandler('ottotone.log')  # File output
     ]
 )
-logger = logging.getLogger('superwhisper')
+logger = logging.getLogger('ottotone')
 # logger.setLevel(logging.DEBUG)  # Enable debug logging
 
 # Audio recording settings

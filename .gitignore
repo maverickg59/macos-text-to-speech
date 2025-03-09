@@ -33,7 +33,7 @@ dist/
 # Logs
 *.log
 logs/
-superwhisper.log
+ottotone.log
 
 # IDE
 .idea/
