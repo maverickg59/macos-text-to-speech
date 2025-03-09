@@ -4,11 +4,8 @@ A simple voice-to-text transcription tool that uses OpenAI's Whisper model. Just
 
 ## Features
 
-- 🎙️ One-key recording (Cmd+Control+R to start/stop)
 - 🔊 Automatic silence detection
 - 📋 Instant clipboard copy
-- 🎯 Optimized for macOS
-- 📱 Native macOS app
 
 ## Requirements
 
@@ -21,7 +18,7 @@ A simple voice-to-text transcription tool that uses OpenAI's Whisper model. Just
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/ottotone.git
+git clone https://github.com/maverickg59/ottotone.git
 cd ottotone
 ```
 
@@ -41,9 +38,10 @@ That's it! Press Cmd+Control+R to start recording, speak your text, and wait for
 
 1. Press Cmd+Control+R to start recording
 2. Speak your text
-3. The recording will automatically stop after 2 seconds of silence
-4. Your transcribed text will be copied to your clipboard
+3. The recording will automatically stop
+4. Transcribed text will be copied to your clipboard
 5. Paste anywhere with Cmd+V
+6. Runs on your machine only
 
 ## Installation Options
 
