@@ -1,4 +1,4 @@
-# Superwhisper
+# Superwhisper clone
 
 A simple voice-to-text transcription tool that uses OpenAI's Whisper model. Just press Cmd+Control+R, speak, and your transcribed text will be automatically copied to your clipboard.
 
