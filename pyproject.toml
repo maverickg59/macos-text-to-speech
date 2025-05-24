@@ -11,7 +11,7 @@ authors = [
     {name = "Your Name", email = "your.email@example.com"}
 ]
 readme = "README.md"
-license = {text = "MIT"}
+license-files = ["LICENSE"]
 
 # Core dependencies
 dependencies = [
@@ -19,14 +19,17 @@ dependencies = [
     "faster-whisper>=0.9.0",  # Speech-to-text
     "sounddevice>=0.4.8",     # Audio recording (latest as of 2023)
     "numpy>=2.0.0",           # Audio processing (latest major as of 2024)
-    "pynput>=1.7.6",          # Global hotkeys
-    "pyperclip>=1.8.2",       # Clipboard operations
     "torch>=2.3.0",           # PyTorch for faster-whisper (latest stable as of 2024)
     "torchaudio>=2.3.0",      # Audio processing for PyTorch
     "ctranslate2>=4.0.0",     # CTranslate2 for faster-whisper (latest stable)
     "tokenizers>=0.15.0",     # Tokenization for faster-whisper
     "huggingface-hub>=0.20.0", # For downloading models (latest stable)
-    "onnxruntime>=1.17.0"     # ONNX runtime for faster-whisper
+    "onnxruntime>=1.17.0",     # ONNX runtime for faster-whisper
+    "pyobjc-core>=10.2",         # PyObjC core (update version as needed)
+    "pyobjc-framework-Cocoa>=10.2", # For AppKit, Foundation (update version as needed)
+    "pyobjc-framework-Quartz>=10.2", # For event taps, CoreGraphics (update version as needed)
+    "pyobjc-framework-ApplicationServices>=10.2", # For Accessibility APIs (update version as needed)
+    "pyobjc-framework-AVFoundation>=10.2"  # For audio/video, microphone permissions (update version as needed)
 ]
 
 # Development and testing dependencies

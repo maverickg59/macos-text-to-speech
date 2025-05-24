@@ -3,34 +3,42 @@ import sounddevice as sd
 import threading
 import time
 import queue
-import platform
 import math
 import numpy as np
 import logging
 import os
 import sys
 
-# Set up logging
+from .config import AppConfig
+
 logger = logging.getLogger(__name__)
 
 class AudioRecorder:
     """Handles audio recording and transcription using faster-whisper.
-
-    Responsibilities:
-    - Record audio from microphone.
-    - Transcribe recorded audio using Whisper.
-    - Manage Whisper model loading.
-    - Automatically stop recording after a period of silence.
+    
+    Records audio from microphone, detects silence, and transcribes using Whisper.
+    Automatically stops recording after detecting silence following speech.
     """
-    def __init__(self, config_manager, transcription_callback=None):
-        self.config_manager = config_manager
-        self.transcription_callback = transcription_callback
+    STATE_IDLE = "IDLE"
+    STATE_WAITING_FOR_SPEECH = "WAITING_FOR_SPEECH"
+    STATE_SPEECH_DETECTED = "SPEECH_DETECTED"
 
+    def __init__(self, config, transcription_callback=None):
+        if isinstance(config, AppConfig):
+            self.config = config
+            self.audio_config = config.audio
+        else:
+            logger.warning("AudioRecorder received legacy ConfigManager. Creating AppConfig wrapper.")
+            self.config = AppConfig()
+            self.config.migrate_from_legacy_config(config)
+            self.audio_config = self.config.audio
+            
+        self.transcription_callback = transcription_callback
         self._load_transcription_parameters()
 
-        self.model_size = self.config_manager.get_selected_model()
-        self.model_path = self.config_manager.get_models_path()
-        self.device = "cpu"
+        self.model_size = self.audio_config.get_selected_model()
+        self.model_path = self.audio_config.get_models_path()
+        self.device = "cpu"  # Explicitly use CPU as faster-whisper doesn't support MPS
         self.compute_type = "int8"
 
         self.model = None
@@ -39,52 +47,60 @@ class AudioRecorder:
 
         logger.info(f"AudioRecorder initialized. Model: {self.model_size}, Device: {self.device}, Compute: {self.compute_type}.")
         
+        # Initialize recording state
         self.frames = []
         self.is_recording = False
         self.command_queue = queue.Queue()
         self._abort_transcription = False
         self._stop_triggered_by_silence = False
-        self.silence_threshold_db = self.config_manager.get_silence_threshold_db(default=-30.0)
-        self.silence_duration = self.config_manager.get_silence_duration_seconds(default=2.0)
         self._silence_start_time = None
         self._recording_start_time = None
         self.min_recording_time = 0.5
+        self.current_recording_state = self.STATE_IDLE
+        self._initial_speech_detected_this_session = False
 
+        # Start audio processing thread
         self.audio_manager_thread = threading.Thread(target=self._audio_manager_worker, daemon=True)
         self.audio_manager_thread.start()
 
     def _load_transcription_parameters(self):
-        """Loads or re-loads transcription parameters from ConfigManager."""
-        self.transcribe_language = self.config_manager.get_transcription_param("language", default="en")
-        self.transcribe_beam_size = self.config_manager.get_transcription_param("beam_size", default=5)
-        self.transcribe_vad_filter = self.config_manager.get_transcription_param("vad_filter", default=True)
-        default_vad_params = {"min_silence_duration_ms": 250, "threshold": 0.35}
-        self.transcribe_vad_parameters = self.config_manager.get_transcription_param("vad_parameters", default=default_vad_params)
-        self.transcribe_temperature = self.config_manager.get_transcription_param("temperature", default=0.0)
-        self.transcribe_patience = self.config_manager.get_transcription_param("patience", default=1.0)
-        self.transcribe_condition_on_previous_text = self.config_manager.get_transcription_param("condition_on_previous_text", default=False)
-        logger.info("Transcription parameters loaded/reloaded.")
+        """Load transcription parameters from configuration."""
+        # Load transcription parameters
+        self.transcribe_language = self.audio_config.get_language()
+        self.transcribe_beam_size = self.audio_config.get_beam_size()
+        self.transcribe_vad_filter = self.audio_config.get_vad_filter()
+        self.transcribe_vad_parameters = self.audio_config.get_vad_parameters()
+        self.transcribe_temperature = self.audio_config.get_temperature()
+        self.transcribe_patience = self.audio_config.get_patience()
+        self.transcribe_condition_on_previous_text = self.audio_config.get_condition_on_previous_text()
+        
+        # Load silence detection parameters
+        self.silence_threshold_db = self.audio_config.get_silence_threshold_db()
+        self.silence_duration = self.audio_config.get_silence_duration_seconds()
+
+        logger.info(f"Parameters loaded: silence={self.silence_threshold_db}dB/{self.silence_duration}s, VAD={self.transcribe_vad_filter}")
+        logger.info(f"VAD params: {self.transcribe_vad_parameters}")
 
     def reload_model(self):
-        """Reloads the Whisper model and its transcription parameters, typically after a configuration change."""
-        logger.info("Reloading Whisper model and transcription parameters...")
-        if self.model is not None:
-            logger.info("Releasing existing model...")
-            del self.model
-            self.model = None
-            logger.info("Existing model released.")
-
-        self.model_size = self.config_manager.get_selected_model()
-        self._load_transcription_parameters()
-
-        logger.info(f"New model selected: {self.model_size}")
-        if not self._load_model():
-            self._safe_callback({"status": "error", "message": f"Failed to reload model {self.model_size}."})
-            logger.error(f"Failed to reload model {self.model_size}. Keeping old model if one existed, or no model.")
-            return False
+        """Reload model with updated configuration."""
+        new_model_size = self.audio_config.get_selected_model()
+        old_model_size = self.model_size
         
-        logger.info(f"Whisper model reloaded. Current model: {self.model_size}")
-        return True
+        if new_model_size != old_model_size:
+            logger.info(f"Model change: {old_model_size} -> {new_model_size}")
+            self.model_size = new_model_size
+            if self._load_model():
+                logger.info(f"Model {new_model_size} loaded successfully")
+                self._load_transcription_parameters()
+                return True
+            else:
+                logger.error(f"Failed to load {new_model_size}, reverting to {old_model_size}")
+                self.model_size = old_model_size
+                self._load_model()
+                return False
+        else:
+            self._load_transcription_parameters()
+            return True
 
     def _calculate_dbfs(self, data):
         rms = np.sqrt(np.mean(data**2))
@@ -97,98 +113,95 @@ class AudioRecorder:
         if status:
             logger.warning(f"WARNING: Recording callback status: {status}")
         
-        if not self.is_recording:
+        if not self.is_recording or self.current_recording_state == self.STATE_IDLE:
             return
         
-        # Append audio data as float32, which is standard for processing
         self.frames.append(indata.copy().astype(np.float32))
 
         current_time = time.monotonic()
-        if self._recording_start_time is None:
+        if self._recording_start_time is None: # Should be set by _audio_manager_worker
             self._recording_start_time = current_time 
 
+        # Always respect min_recording_time to avoid processing tiny audio snippets
         if (current_time - self._recording_start_time) < self.min_recording_time:
             return
 
         mono_data = indata.mean(axis=1) if indata.ndim > 1 else indata
         dbfs = self._calculate_dbfs(mono_data)
 
-        if dbfs < self.silence_threshold_db:
-            if self._silence_start_time is None:
-                self._silence_start_time = current_time
-            elif (current_time - self._silence_start_time) >= self.silence_duration:
-                # Check if a stop command due to silence has already been issued for this recording session.
-                # This prevents queuing multiple stop commands if the callback somehow fires again
-                # before the audio manager processes the first stop command.
-                if not self.is_recording or self._stop_triggered_by_silence:
-                    return # Already stopping or stopped
+        if self.current_recording_state == self.STATE_WAITING_FOR_SPEECH:
+            if dbfs >= self.silence_threshold_db:
+                logger.info(f"Initial sound detected (dBFS: {dbfs:.2f}). Transitioning to SPEECH_DETECTED state.")
+                self.current_recording_state = self.STATE_SPEECH_DETECTED
+                self._initial_speech_detected_this_session = True
+                self._silence_start_time = None # Reset silence timer, as speech just occurred
+            # else: Still waiting for speech, silence timer is not active yet.
 
-                logger.info(f"INFO: Silence duration ({self.silence_duration}s) met. Queuing stop command.")
-                self._stop_triggered_by_silence = True # Mark that silence is the trigger
-                self.command_queue.put({"command": "stop", "reason": "silence_detected"})
-                # Do not reset _silence_start_time here. The recording will be stopped by the manager.
-                # The _safe_callback for 'silence_limit_reached' is no longer needed here as the stop command implies this.
-                # If app.py needs a pre-stop notification, that's a different status like 'silence_detected_stopping'.
-                # For now, the 'recording_stopped' with reason 'silence_detected' should be sufficient.
-        else:
-            if self._silence_start_time is not None:
-                logger.debug(f"DEBUG: Sound detected, resetting silence timer. (dBFS: {dbfs:.2f})")
-                self._silence_start_time = None
+        elif self.current_recording_state == self.STATE_SPEECH_DETECTED:
+            if dbfs < self.silence_threshold_db:
+                if self._silence_start_time is None:
+                    self._silence_start_time = current_time
+                    logger.debug(f"Sound dropped below threshold (dBFS: {dbfs:.2f}). Starting silence timer (duration: {self.silence_duration}s).")
+                elif (current_time - self._silence_start_time) >= self.silence_duration:
+                    if not self.is_recording or self._stop_triggered_by_silence: # Check if already stopping
+                        return 
+
+                    logger.info(f"Max silence duration ({self.silence_duration}s) met after speech. Queuing stop command.")
+                    self._stop_triggered_by_silence = True # Mark that silence is the trigger
+                    self.command_queue.put({"command": "stop", "reason": "silence_detected"})
+            else: # Sound is present (dbfs >= self.silence_threshold_db)
+                if self._silence_start_time is not None:
+                    logger.debug(f"Sound re-detected (dBFS: {dbfs:.2f}), resetting silence timer.")
+                self._silence_start_time = None # Reset silence timer as sound is present
 
     def _load_model(self):
-        self.model = None # Clear existing model first
-        self.model_size = self.config_manager.get_selected_model()
-        self.compute_type = self.config_manager.get_compute_type(default="int8") # Get from config
-        self.device = "cpu" # Ensure it's always CPU for Macs
-
-        # Determine the correct path for models (for bundled app or normal run)
-        effective_model_path = self.config_manager.get_models_path() # User-defined path from config
-        force_local_files_only = False
-
-        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-            # Application is running in a bundled environment (PyInstaller)
-            # Models are expected to be in 'bundled_models' directory relative to sys._MEIPASS
-            bundle_model_dir = os.path.join(sys._MEIPASS, 'bundled_models')
-            if os.path.isdir(bundle_model_dir):
-                # Check if the specific model exists within the bundled directory
-                potential_model_bundle_path = os.path.join(bundle_model_dir, self.model_size)
-                if os.path.isdir(potential_model_bundle_path):
-                    logger.info(f"Running bundled. Found model '{self.model_size}' in bundled models path: {potential_model_bundle_path}")
-                    # If model_size is a name like 'base', and it's found directly under bundled_models, 
-                    # effective_model_path should point to 'bundled_models' for download_root behavior.
-                    # If self.model_size was intended as a sub-path already, this logic might need adjustment.
-                    # For now, assume model_size is a direct subdir name under bundled_models or a full path.
-                    effective_model_path = bundle_model_dir # WhisperModel will look for 'model_size' inside this
-                else:
-                    # If the specific model isn't a subdir, but model_size itself might be a full path to a bundled model
-                    # This case is less likely if we bundle all models under 'bundled_models/<model_name>/'
-                    logger.info(f"Running bundled. Model '{self.model_size}' not found as direct subdir in {bundle_model_dir}. Using '{self.model_size}' as model_size_or_path and {bundle_model_dir} as download_root.")
-                    effective_model_path = bundle_model_dir # Still use bundled_models as the root to search in
-                force_local_files_only = True # Crucial for bundled apps
-            else:
-                logger.warning(f"Running bundled, but 'bundled_models' directory not found at {bundle_model_dir}. Will fall back to config/default download path. This might fail if internet is unavailable.")
-                # If bundled_models isn't found, it will fall back to user's config path or default download behavior of faster-whisper
-                # Forcing local_files_only might be risky here if we expect a fallback download.
-                # However, for a truly standalone app, we should aim for bundled_models to exist.
-                force_local_files_only = True # Still prefer local if we claim to be bundled.
-    
-        logger.info(f"INFO: Loading Whisper model '{self.model_size}' (device: {self.device}, compute: {self.compute_type}). Effective model download_root: {effective_model_path}, local_files_only: {force_local_files_only}")
         try:
+            # Release existing model if present
+            if self.model is not None:
+                logger.info("Releasing existing model resources...")
+                del self.model
+                self.model = None
+            
+            # Ensure model parameters are set
+            if not hasattr(self, 'model_size') or not self.model_size:
+                self.model_size = self.audio_config.get_selected_model()
+            self.compute_type = self.audio_config.get_compute_type()
+            self.device = "cpu"  # Always use CPU as faster-whisper doesn't support MPS
+
+            # Get path for models
+            effective_model_path = self.audio_config.get_models_path()
+            force_local_files_only = False
+
+            # Handle bundled app case (PyInstaller)
+            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                bundle_model_dir = os.path.join(sys._MEIPASS, 'bundled_models')
+                if os.path.isdir(bundle_model_dir):
+                    potential_model_bundle_path = os.path.join(bundle_model_dir, self.model_size)
+                    if os.path.isdir(potential_model_bundle_path):
+                        logger.info(f"Found bundled model '{self.model_size}'")
+                        effective_model_path = bundle_model_dir
+                    else:
+                        logger.info(f"Using bundled models dir as download_root")
+                        effective_model_path = bundle_model_dir
+                    force_local_files_only = True
+                else:
+                    logger.warning(f"Bundled models directory not found, using fallback path")
+                    force_local_files_only = True
+        
+            logger.info(f"Loading Whisper model '{self.model_size}' (device: {self.device})")
             self.model = WhisperModel(
-                model_size_or_path=self.model_size, # Pass the model size/name directly
+                model_size_or_path=self.model_size,
                 device=self.device, 
                 compute_type=self.compute_type,
-                download_root=effective_model_path, # Use the determined path for download/caching if not an absolute path
-                local_files_only=force_local_files_only # For bundled app, force local files only
+                download_root=effective_model_path,
+                local_files_only=force_local_files_only
             )
-            logger.info(f"INFO: Whisper model '{self.model_size}' loaded successfully.")
+            logger.info(f"Whisper model '{self.model_size}' loaded successfully")
             return True
         except Exception as e:
-            logger.error(f"ERROR: Failed to load Whisper model '{self.model_size}': {e}", exc_info=True)
-            # Attempt to provide a more user-friendly error to the main app if possible
+            logger.error(f"Failed to load Whisper model '{self.model_size}': {e}", exc_info=True)
             error_message = f"Failed to load model {self.model_size}. Error: {str(e)[:100]}..."
             self._safe_callback({"status": "model_load_error", "error": error_message, "details": str(e)})
-            self.model = None
             return False
 
     def _audio_manager_worker(self):
@@ -212,16 +225,23 @@ class AudioRecorder:
 
                     if self.model is None:
                         logger.error("ERROR AUDMAN: Model not loaded, aborting recording start.")
-                        continue
+                        self._safe_callback({"status": "error", "message": "Model not loaded"})
+                        continue # Added continue
 
                     self.frames = []
                     self._silence_start_time = None
-                    self._recording_start_time = time.monotonic()
+                    self._recording_start_time = time.monotonic() # Set actual stream start time here
                     self._stop_triggered_by_silence = False
+                    self._initial_speech_detected_this_session = False # Reset for new session
+                    self.current_recording_state = self.STATE_WAITING_FOR_SPEECH # Set initial state
 
                     try:
-                        samplerate = int(sd.query_devices(None, 'input')['default_samplerate'])
-                        logger.info(f"INFO: Audio device initialized. Sample rate: {samplerate}Hz")
+                        # Query sample rate each time in case default device changes
+                        # TODO: Make device selectable and store its sample rate
+                        device_info = sd.query_devices(None, 'input')
+                        samplerate = int(device_info['default_samplerate'])
+                        logger.info(f"INFO: Audio device initialized. Device: {device_info['name']}, Sample rate: {samplerate}Hz")
+                        
                         current_stream = sd.InputStream(
                             samplerate=samplerate, 
                             channels=1,
@@ -229,34 +249,40 @@ class AudioRecorder:
                             dtype='float32'
                         )
                         current_stream.start()
-                        self.is_recording = True
-                        logger.info("INFO: Recording started by audio manager.")
+                        self.is_recording = True # Critical: Set true *after* stream starts
+                        logger.info("INFO: Recording started by audio manager. State: WAITING_FOR_SPEECH")
                         self._safe_callback({"status": "recording_started"})
                     except Exception as e:
-                        logger.error(f"ERROR AUDMAN: Failed to start audio stream: {e}")
+                        logger.error(f"ERROR AUDMAN: Failed to start audio stream: {e}", exc_info=True)
                         self.is_recording = False
+                        self.current_recording_state = self.STATE_IDLE # Reset state on error
                         if current_stream:
-                            try: current_stream.close()
-                            except: pass
+                            try: 
+                                current_stream.stop() # Ensure stream is stopped
+                                current_stream.close()
+                            except Exception as e_close:
+                                logger.error(f"ERROR AUDMAN: Exception closing stream after start failure: {e_close}")
                         current_stream = None
                         self._safe_callback({"status": "error", "message": f"Audio stream error: {e}"})
                 
                 elif command == "stop":
                     if not self.is_recording and not self._stop_triggered_by_silence:
-                        logger.debug("DEBUG AUDMAN: Not recording or stop already processed, ignoring stop command.")
-                        if not self.is_recording:
+                        logger.debug("DEBUG AUDMAN: Not recording or stop already processed (e.g. by silence), ignoring redundant stop command.")
+                        # If already stopped by silence, _stop_triggered_by_silence will be true.
+                        # If is_recording is false and _stop_triggered_by_silence is false, it was likely a manual stop already handled.
+                        if self.current_recording_state == self.STATE_IDLE:
                              continue
                     
                     reason = command_data.get("reason", "manual_stop")
-                    logger.debug(f"DEBUG AUDMAN: Processing stop command. Reason: {reason}")
+                    logger.debug(f"DEBUG AUDMAN: Processing stop command. Reason: {reason}. Current state: {self.current_recording_state}")
                     
-                    # Critical: Set is_recording false *before* touching the stream.
-                    # This signals the callback to stop appending frames.
-                    self.is_recording = False 
+                    self.is_recording = False # Signal callback to stop appending frames *first*
+                    self.current_recording_state = self.STATE_IDLE # Transition to IDLE
+
                     if reason == "silence_detected":
-                        self._stop_triggered_by_silence = True
-                    else:
-                        self._stop_triggered_by_silence = False # Clear if manual stop
+                        self._stop_triggered_by_silence = True # This flag is checked by callback
+                    else: # manual_stop or other reasons
+                        self._stop_triggered_by_silence = False
 
                     actual_stop_reason = "silence_detected" if self._stop_triggered_by_silence else "manual_stop"
 
@@ -268,132 +294,138 @@ class AudioRecorder:
                             current_stream.close()
                             logger.debug("DEBUG AUDMAN: current_stream.close() called successfully.")
                         except Exception as e:
-                            logger.error(f"ERROR AUDMAN: Exception while stopping/closing audio stream: {e}")
-                        current_stream = None # Clear stream reference
+                            logger.error(f"ERROR AUDMAN: Exception while stopping/closing audio stream: {e}", exc_info=True)
+                        current_stream = None
                         logger.debug("DEBUG AUDMAN: Stream stopped, closed, and set to None.")
                     else:
                         logger.debug("DEBUG AUDMAN: Stream is None. No stream operations needed for stop.")
 
                     logger.info(f"INFO: Recording stopped by audio manager. Reason: {actual_stop_reason}")
+                    self._safe_callback({"status": "recording_stopped", "reason": actual_stop_reason})
 
-                    if not self.frames:
-                        logger.warning("WARNING AUDMAN: No frames recorded before stop command.")
-                        self._safe_callback({"status": "no_audio_recorded", "reason": actual_stop_reason})
-                        self._stop_triggered_by_silence = False 
+                    # Check if any audio was actually captured before attempting transcription
+                    # This also handles the case where recording was stopped before min_recording_time
+                    # or if no initial speech was detected and then a manual stop occurred.
+                    if not self.frames or not self._initial_speech_detected_this_session and actual_stop_reason == "manual_stop":
+                        if not self.frames:
+                            logger.warning("WARNING AUDMAN: No frames recorded.")
+                        if not self._initial_speech_detected_this_session and actual_stop_reason == "manual_stop":
+                            logger.info("INFO AUDMAN: Recording stopped manually before initial speech was detected. No transcription.")
+                        
+                        self._safe_callback({
+                            "status": "no_audio_for_transcription", 
+                            "reason": actual_stop_reason, 
+                            "message": "No speech detected or recording too short."
+                        })
+                        self.frames = [] # Ensure frames are cleared
+                        self._stop_triggered_by_silence = False # Reset for next session
                         continue
 
-                    audio_data_np = np.concatenate(self.frames, axis=0).astype(np.float32)
-                    self.frames = [] # Clear frames immediately after concatenation
+                    # Make a copy of frames for transcription thread to prevent modification issues
+                    frames_to_transcribe = list(self.frames) 
+                    self.frames = [] # Clear frames immediately
                     
-                    # Convert to mono if needed
+                    audio_data_np = np.concatenate(frames_to_transcribe, axis=0).astype(np.float32)
+                    
                     if audio_data_np.ndim > 1:
                         audio_data_np = audio_data_np.mean(axis=1)
                     
-                    # Normalize the audio (scale to [-1.0, 1.0] range)
-                    # This is crucial for Whisper performance
-                    max_abs_val = np.abs(audio_data_np).max()
-                    if max_abs_val > 0:
-                        audio_data_np = audio_data_np / max_abs_val
-                    else:
-                        logger.warning("WARNING AUDMAN: Audio data is all zeros after concatenation.")
-                        self._safe_callback({"status": "no_audio_recorded", "reason": "empty_signal"})
-                        self._stop_triggered_by_silence = False
-                        continue
-                                        
-                    logger.debug("DEBUG AUDMAN: Frames concatenated, converted to mono, normalized, and cleared.")
+                    logger.info(f"INFO AUDMAN: Audio data prepared for transcription. Samples: {len(audio_data_np)}")
+                    self._safe_callback({"status": "processing_transcription"})
                     
-                    # Run transcription in a separate thread so we can respond to exit commands immediately
-                    self._transcription_thread = threading.Thread(
-                        target=self._transcribe_audio_data,
-                        args=(audio_data_np, actual_stop_reason),
-                        daemon=True
+                    # Start transcription in a new thread
+                    transcription_thread = threading.Thread(
+                        target=self._transcribe_audio_data, 
+                        args=(audio_data_np, actual_stop_reason)
                     )
-                    self._transcription_thread.start()
-                    self._stop_triggered_by_silence = False # Reset for next recording
+                    transcription_thread.daemon = True # Ensure thread doesn't block app exit
+                    transcription_thread.start()
 
                 elif command == "exit":
                     logger.info("INFO AUDMAN: Exit command received. Shutting down audio manager.")
-                    # Mark that we're aborting any in-progress work
-                    self._abort_transcription = True
-                    
-                    # Safely stop and close any active stream
                     if current_stream:
-                        try: 
-                            current_stream.stop()
+                        try:
+                            if self.is_recording:
+                                current_stream.stop()
+                                self.is_recording = False
                             current_stream.close()
-                        except Exception as e: 
-                            logger.warning(f"WARNING AUDMAN: Error during stream cleanup on exit: {e}")
-                    
-                    # Clean up the model reference if it exists
-                    if hasattr(self, 'model') and self.model is not None:
-                        logger.info("INFO AUDMAN: Clearing Whisper model reference in audio manager thread.")
-                        self.model = None
-                    
-                    logger.info("INFO AUDMAN: Audio manager thread exiting")
-                    break # Exit the while loop
+                        except Exception as e:
+                            logger.error(f"ERROR AUDMAN: Exception during stream cleanup on exit: {e}")
+                        current_stream = None
+                    break # Exit the while loop, ending the thread
                 else:
-                    logger.warning(f"WARNING AUDMAN: Unknown command: {command}")
+                    logger.warning(f"WARNING AUDMAN: Unknown command received: {command_data}")
+            
+            except queue.Empty:
+                # This should not happen with queue.get() blocking, but as a safeguard.
+                continue
             except Exception as e:
-                logger.error(f"ERROR AUDMAN: Unhandled exception in worker: {e}")
-                # Potentially try to reset state or log critical error
-                if current_stream: # Attempt to clean up stream on unexpected error
-                    try: current_stream.close() 
-                    except: pass
-                    current_stream = None
-                self.is_recording = False # Reset recording state
+                logger.error(f"CRITICAL AUDMAN: Unhandled exception in audio manager worker loop: {e}", exc_info=True)
+                # Attempt to gracefully stop recording if active, to prevent runaway threads/resources
+                if current_stream and self.is_recording:
+                    try:
+                        current_stream.stop()
+                        current_stream.close()
+                    except Exception as e_stop:
+                        logger.error(f"CRITICAL AUDMAN: Further error stopping stream during exception handling: {e_stop}")
+                self.is_recording = False
+                self.current_recording_state = self.STATE_IDLE
+                current_stream = None
+                # Consider if the thread should exit or try to recover. For now, it continues.
+                # If errors persist, the app might become unresponsive or behave erratically.
+
+        logger.info("INFO AUDMAN: Audio manager worker thread finished.")
 
     def _safe_callback(self, data):
-        """Helper method to safely invoke callbacks on the main thread."""
+        """Safely invoke callbacks on the main thread."""
         if self.transcription_callback:
-            # Use a timer with a small delay to schedule on main thread
             def invoke_callback():
                 self.transcription_callback(data)
             threading.Timer(0.01, invoke_callback).start()
 
     def start_recording(self):
-        logger.debug("DEBUG AUDREC: start_recording called. Queuing 'start' command.")
+        """Start recording audio."""
+        logger.debug("Starting audio recording")
         self.command_queue.put({"command": "start"})
         return True
 
     def stop_recording(self, reason="manual_stop"):
-        logger.debug(f"DEBUG AUDREC: stop_recording called. Reason: {reason}. Queuing 'stop' command.")
+        """Stop recording audio."""
+        logger.debug(f"Stopping recording, reason: {reason}")
         self.command_queue.put({"command": "stop", "reason": reason})
 
     def _transcribe_audio_data(self, audio_data_np, reason):
-        """Helper method to run transcription, called in a separate thread."""
-        logger.debug("Starting transcription process...")
+        """Transcribe recorded audio data."""
         try:
-            # Check abort flag before starting transcription
             if self._abort_transcription:
                 logger.debug("Transcription aborted due to shutdown request")
                 return
             
+            # Basic audio stats for debugging
             avg_amplitude = np.abs(audio_data_np).mean()
             max_amplitude = np.abs(audio_data_np).max()
-            logger.debug(f"Pre-transcription Audio stats - Samples: {len(audio_data_np)}, Mean amp: {avg_amplitude:.6f}, Max amp: {max_amplitude:.6f}")
+            logger.debug(f"Audio samples: {len(audio_data_np)}, Mean: {avg_amplitude:.4f}, Max: {max_amplitude:.4f}")
             
-            logger.debug("Running transcription with configured parameters...")
-            
+            # Get transcription parameters and run the model
+            transcription_params = self.audio_config.get_all_transcription_parameters()
             segments, info = self.model.transcribe(
                 audio_data_np,
-                language=self.transcribe_language,
-                beam_size=self.transcribe_beam_size,
-                vad_filter=self.transcribe_vad_filter,
-                vad_parameters=self.transcribe_vad_parameters,
-                temperature=self.transcribe_temperature,
-                patience=self.transcribe_patience,
-                condition_on_previous_text=self.transcribe_condition_on_previous_text
+                language=transcription_params["language"],
+                beam_size=transcription_params["beam_size"],
+                vad_filter=transcription_params["vad_filter"],
+                vad_parameters=transcription_params["vad_parameters"],
+                temperature=transcription_params["temperature"],
+                patience=transcription_params["patience"],
+                condition_on_previous_text=transcription_params["condition_on_previous_text"]
             )
             
-            # Check abort flag again after transcription
             if self._abort_transcription:
-                logger.debug("Transcription completed but results discarded due to shutdown")
+                logger.debug("Transcription results discarded due to shutdown")
                 return
                 
             # Convert segments to text
             transcribed_text = "".join(segment.text for segment in segments).strip()
-            
-            logger.info(f"INFO: Transcription complete. Detected lang: {info.language} (prob: {info.language_probability:.2f}), Forced lang: {self.transcribe_language}")
+            logger.info(f"Transcription complete. Detected: {info.language} (prob: {info.language_probability:.2f})")
             
             self._safe_callback({
                 "status": "transcription_complete", 
@@ -402,24 +434,12 @@ class AudioRecorder:
                 "reason": reason
             })
         except Exception as e:
-            logger.error(f"ERROR: Transcription failed: {e}", exc_info=True)
+            logger.error(f"Transcription failed: {e}", exc_info=True)
             self._safe_callback({"status": "error", "reason": reason, "message": f"Error during transcription: {e}"})
 
     def shutdown(self):
-        logger.info("INFO AUDREC: Shutdown called. Setting abort flag and queuing 'exit' command.")
+        """Shut down the audio recorder."""
+        logger.info("Shutting down audio recorder")
         self._abort_transcription = True
         self.command_queue.put({"command": "exit"})
-        
-        # Wait for the audio manager thread to finish
-        self.audio_manager_thread.join(timeout=3.0) 
-        if self.audio_manager_thread.is_alive():
-            logger.warning("WARNING AUDREC: Audio manager thread did not exit cleanly after 3 seconds.")
-        else:
-            logger.info("INFO AUDREC: Audio manager thread exited cleanly.")
-
-        # Clean up the model if it exists to release its resources
-        if hasattr(self, 'model') and self.model is not None:
-            logger.info("INFO AUDREC: Releasing Whisper model resources.")
-            del self.model 
-            self.model = None
-            logger.info("INFO AUDREC: Whisper model resources released.")
+        self.audio_manager_thread.join(timeout=3.0)

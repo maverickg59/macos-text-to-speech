@@ -24,47 +24,66 @@ class HotkeyManager:
         "shift": NSShiftKeyMask,
     }
 
-    def __init__(self, config_manager, callback):
-        self.config_manager = config_manager
+    def __init__(self, hotkey_config, callback):
+        self.hotkey_config_manager = hotkey_config
         self.callback = callback
-        self.hotkey_config = None
+        self.hotkey_data = None  # Actual hotkey configuration data
         self.tap = None
         self.run_loop_source = None
         self.is_listening = False
         self._load_hotkey_config()
 
     def _load_hotkey_config(self):
-        default_hotkey = {"key_code": 49, "modifiers": ["cmd", "shift"]}
-        config_hotkey = self.config_manager.get_setting("hotkey", default_hotkey)
-        
-        if isinstance(config_hotkey, dict) and \
-           "key_code" in config_hotkey and isinstance(config_hotkey["key_code"], int) and \
-           "modifiers" in config_hotkey and isinstance(config_hotkey["modifiers"], list):
-            
-            valid_modifiers = all(mod in self.MODIFIER_MAP for mod in config_hotkey["modifiers"])
-            if valid_modifiers:
-                self.hotkey_config = config_hotkey
-                logger.info(f"Hotkey loaded: {self.get_current_hotkey_display()}")
-            else:
-                logger.warning(f"Invalid modifiers in hotkey config: {config_hotkey['modifiers']}. Using default.")
-                self.hotkey_config = default_hotkey
-                self._save_hotkey_config()
+        # Check if we're using the new HotkeyConfig or the legacy ConfigManager
+        if hasattr(self.hotkey_config_manager, 'get_recording_toggle_hotkey'):
+            # New HotkeyConfig
+            self.hotkey_data = self.hotkey_config_manager.get_recording_toggle_hotkey()
+            logger.info(f"Hotkey loaded from HotkeyConfig: {self.get_current_hotkey_display()}")
         else:
-            logger.warning(f"Invalid hotkey configuration loaded: {config_hotkey}. Using default.")
-            self.hotkey_config = default_hotkey
-            self._save_hotkey_config()
+            # Legacy ConfigManager
+            default_hotkey = {"key_code": 49, "modifiers": ["cmd", "shift"]}
+            self.hotkey_data = self.hotkey_config_manager.get_setting("hotkey", default_hotkey)
+            
+            # Validate hotkey format
+            if not (isinstance(self.hotkey_data, dict) and 
+                   "key_code" in self.hotkey_data and isinstance(self.hotkey_data["key_code"], int) and 
+                   "modifiers" in self.hotkey_data and isinstance(self.hotkey_data["modifiers"], list)):
+                logger.warning(f"Invalid hotkey configuration loaded: {self.hotkey_data}. Using default.")
+                self.hotkey_data = default_hotkey
+                self._save_hotkey_config()
+                return
+                
+            # Validate modifiers
+            valid_modifiers = all(mod in self.MODIFIER_MAP for mod in self.hotkey_data["modifiers"])
+            if not valid_modifiers:
+                logger.warning(f"Invalid modifiers in hotkey config: {self.hotkey_data['modifiers']}. Using default.")
+                self.hotkey_data = default_hotkey
+                self._save_hotkey_config()
+                return
+                
+            logger.info(f"Hotkey loaded from legacy config: {self.get_current_hotkey_display()}")
 
     def _save_hotkey_config(self):
-        if self.hotkey_config:
-            self.config_manager.set_setting("hotkey", self.hotkey_config)
-            logger.info(f"Hotkey configuration saved: {self.get_current_hotkey_display()}")
+        if not self.hotkey_data:
+            logger.warning("Attempted to save None hotkey_data.")
+            return
+            
+        # Check if we're using the new HotkeyConfig or the legacy ConfigManager
+        if hasattr(self.hotkey_config_manager, 'set_recording_toggle_hotkey'):
+            # New HotkeyConfig
+            key_code = self.hotkey_data.get("key_code")
+            modifiers = self.hotkey_data.get("modifiers", [])
+            self.hotkey_config_manager.set_recording_toggle_hotkey(key_code, modifiers)
+            logger.info(f"Hotkey configuration saved to HotkeyConfig: {self.get_current_hotkey_display()}")
         else:
-            logger.warning("Attempted to save None hotkey_config.")
+            # Legacy ConfigManager
+            self.hotkey_config_manager.set_setting("hotkey", self.hotkey_data)
+            logger.info(f"Hotkey configuration saved to legacy config: {self.get_current_hotkey_display()}")
 
     def _calculate_modifier_flags(self):
         flags = 0
-        if self.hotkey_config and self.hotkey_config.get("modifiers"):
-            for mod_name in self.hotkey_config["modifiers"]:
+        if self.hotkey_data and self.hotkey_data.get("modifiers"):
+            for mod_name in self.hotkey_data["modifiers"]:
                 flags |= self.MODIFIER_MAP.get(mod_name, 0)
         return flags
 
@@ -74,7 +93,7 @@ class HotkeyManager:
             event_flags = CGEventGetFlags(event)
             target_flags = self._calculate_modifier_flags()
 
-            if keycode == self.hotkey_config.get("key_code") and type == kCGEventKeyDown:
+            if keycode == self.hotkey_data.get("key_code") and type == kCGEventKeyDown:
                 if (event_flags & 0xFFFF0000) == target_flags:
                     logger.debug(f"Hotkey pressed: KeyCode {keycode}, Modifiers {event_flags:#x}")
                     if self.callback:
@@ -92,14 +111,15 @@ class HotkeyManager:
         if not QUARTZ_AVAILABLE:
             logger.info("Hotkey listening is not supported on this platform (Quartz not available).")
             return False
-
+            
+        if not self.hotkey_data or not self.callback:
+            logger.info("Hotkey not properly configured or no callback. Cannot start listener.")
+            return False
+        
         if self.is_listening:
             logger.info("Hotkey listener is already running.")
             return True
         
-        if not self.hotkey_config or not self.callback:
-            logger.warning("Hotkey not properly configured or no callback. Cannot start listener.")
-            return False
 
         logger.info(f"Attempting to start hotkey listener for: {self.get_current_hotkey_display()}")
         try:
@@ -154,14 +174,20 @@ class HotkeyManager:
         logger.info("Hotkey listener stopped.")
 
     def set_hotkey(self, key_code, modifiers):
-        self.hotkey_config = {"key_code": key_code, "modifiers": modifiers}
+        self.hotkey_data = {"key_code": key_code, "modifiers": modifiers}
         self._save_hotkey_config()
 
     def get_current_hotkey_display(self):
-        if not self.hotkey_config:
+        if not self.hotkey_data:
             return "Not configured"
-        key_code = self.hotkey_config.get("key_code")
-        mods = self.hotkey_config.get("modifiers", [])
+            
+        # Check if we can use HotkeyConfig's display method
+        if hasattr(self.hotkey_config_manager, 'get_hotkey_display'):
+            return self.hotkey_config_manager.get_hotkey_display(self.hotkey_data)
+            
+        # Fallback to our own display logic
+        key_code = self.hotkey_data.get("key_code")
+        mods = self.hotkey_data.get("modifiers", [])
         mod_str = "+".join(m.upper() for m in mods)
         return f"{mod_str} + [KeyCode: {key_code}]"
 

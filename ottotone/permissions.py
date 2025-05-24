@@ -4,9 +4,8 @@ Handles checking and guiding the user for necessary macOS permissions.
 """
 
 import platform
-import rumps
-import sounddevice as sd # Keep for AudioRecorder, but not for this specific check
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +54,17 @@ class PermissionsManager:
     """
     def __init__(self):
         self.os_type = platform.system()
-        logger.info("PermissionsManager initialized.")
+        self.bundled = hasattr(sys, 'frozen') # Check if running as a bundled app
+        logger.info(f"PermissionsManager initialized. Running bundled: {self.bundled}")
+
+    def is_running_bundled(self):
+        """Returns True if the application appears to be running in a bundled state."""
+        return self.bundled
 
     def check_microphone_permission(self):
         """Checks microphone permission status using AVFoundation.
         Returns the AVAuthorizationStatus (e.g., AVAuthorizationStatusAuthorized, etc.).
-        Returns AVAuthorizationStatusAuthorized for non-Darwin platforms.
+        Returns AUTH_STATUS_AUTHORIZED for non-Darwin platforms.
         """
         if self.os_type != "Darwin":
             logger.info("Microphone permission check skipped (not on macOS). Returning AUTH_STATUS_AUTHORIZED.")
@@ -135,7 +139,14 @@ class PermissionsManager:
         
         instruction_lines = []
         for i, perm_info in enumerate(missing_permissions_details):
-            instruction_lines.append(f"Permission {i+1} ({perm_info['name']}):\n{perm_info['instruction']}")
+            current_instruction = perm_info['instruction']
+            # Modify instruction for Input Monitoring if running in dev mode
+            if perm_info['key'] == PERM_KEY_INPUT_MONITORING and not self.is_running_bundled():
+                current_instruction = (
+                    f"System Settings > Privacy & Security > Input Monitoring.\n"
+                    f"Then, enable Input Monitoring for 'Terminal' (or your specific terminal/IDE app, e.g., iTerm, VSCode)."
+                )
+            instruction_lines.append(f"Permission {i+1} ({perm_info['name']}):\n{current_instruction}")
         
         informative_text = "Ottotone needs the following permission(s) to function correctly:\n\n"
         informative_text += "\n\n".join(instruction_lines)
