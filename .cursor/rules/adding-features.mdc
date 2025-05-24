@@ -1,7 +1,0 @@
----
-description: 
-globs: 
-alwaysApply: false
----
-- for every new feature there must be a test written
-- for every change to the codebase we must pass all tests
