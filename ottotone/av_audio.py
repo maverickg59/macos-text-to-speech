@@ -5,12 +5,56 @@ It provides a reliable way to access the microphone with a simple interface.
 """
 
 import time
+import threading
 import logging
 import numpy as np
 import pyaudio
 from typing import Callable, Dict, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+# Create a shared PyAudio instance to avoid multiple initializations
+_shared_pyaudio = None
+
+def get_shared_pyaudio():
+    """Get or create a shared PyAudio instance.
+    
+    This ensures we only create one PyAudio instance for the entire application,
+    which helps avoid resource contention and multiple initializations.
+    
+    Returns:
+        A shared PyAudio instance
+    """
+    global _shared_pyaudio
+    if _shared_pyaudio is None:
+        try:
+            _shared_pyaudio = pyaudio.PyAudio()
+            logger.debug("Created shared PyAudio instance")
+        except Exception as e:
+            logger.error(f"Error creating shared PyAudio instance: {e}")
+            raise
+    return _shared_pyaudio
+
+
+def terminate_shared_pyaudio():
+    """Terminate the shared PyAudio instance.
+    
+    This should be called during application shutdown to ensure proper cleanup.
+    """
+    global _shared_pyaudio
+    if _shared_pyaudio is not None:
+        try:
+            _shared_pyaudio.terminate()
+            logger.debug("Terminated shared PyAudio instance")
+            _shared_pyaudio = None
+        except Exception as e:
+            logger.error(f"Error terminating shared PyAudio instance: {e}")
+            _shared_pyaudio = None
+
+
+# Register cleanup with atexit to ensure proper shutdown
+import atexit
+atexit.register(terminate_shared_pyaudio)
 
 
 class AVAudioCapture:
@@ -41,8 +85,8 @@ class AVAudioCapture:
         self.callback = callback
         self.is_recording = False
         
-        # PyAudio objects
-        self._py_audio = None
+        # PyAudio objects - initialize with shared instance
+        self._py_audio = get_shared_pyaudio()
         self._stream = None
         
         # Format parameters
@@ -84,7 +128,7 @@ class AVAudioCapture:
         """
         try:
             if not self._py_audio:
-                self._py_audio = pyaudio.PyAudio()
+                self._py_audio = get_shared_pyaudio()
                 
             device_index = self._get_device_index()
             if device_index == pyaudio.paNoDevice:
@@ -151,7 +195,7 @@ class AVAudioCapture:
             
             # Initialize PyAudio if needed
             if not self._py_audio:
-                self._py_audio = pyaudio.PyAudio()
+                self._py_audio = get_shared_pyaudio()
             
             # Get device info to log
             device_info = self._get_device_info()
@@ -227,203 +271,10 @@ class AVAudioCapture:
             if self.is_recording:
                 self.stop()
                 
-            # Clean up PyAudio
+            # Only clear the reference to the shared PyAudio instance, don't terminate it
             if self._py_audio:
-                self._py_audio.terminate()
                 self._py_audio = None
-                logger.debug("PyAudio terminated and resources released")
-                    
-        except Exception as e:
-            logger.error(f"Error closing audio resources: {e}")
-            # Don't raise exception to maintain compatibility with sounddevice interface
-        
-        # Format parameters
-        self._format = pyaudio.paFloat32  # Use 32-bit float format
-        self._frames_per_buffer = 1024    # Buffer size
-        
-        logger.info(f"Initialized PyAudio capture: rate={self.sample_rate}, channels={self.channels}")
-    
-    def _get_device_index(self) -> int:
-        """Get the device index for the specified device.
-        
-        Returns:
-            int: Device index to use with PyAudio
-        """
-        # If device is specified as an integer, use it directly
-        if isinstance(self.device, int):
-            return self.device
-            
-        # If device is specified as a string, try to find matching device
-        if isinstance(self.device, str) and self._py_audio:
-            info = self._py_audio.get_host_api_info_by_index(0)
-            num_devices = info.get('deviceCount')
-            
-            # Iterate through devices to find a name match
-            for i in range(num_devices):
-                device_info = self._py_audio.get_device_info_by_index(i)
-                if (device_info.get('maxInputChannels') > 0 and 
-                    self.device.lower() in device_info.get('name').lower()):
-                    return i
-        
-        # Default to default input device
-        return pyaudio.paNoDevice  # Will use system default
-    
-    def _get_device_info(self) -> Optional[Dict[str, Any]]:
-        """Get information about the selected audio device.
-        
-        Returns:
-            Optional[Dict[str, Any]]: Device information or None if not available
-        """
-        try:
-            if not self._py_audio:
-                self._py_audio = pyaudio.PyAudio()
-                
-            device_index = self._get_device_index()
-            if device_index == pyaudio.paNoDevice:
-                # Get default input device
-                device_index = self._py_audio.get_default_input_device_info().get('index')
-                
-            # Get device info
-            device_info = self._py_audio.get_device_info_by_index(device_index)
-            
-            # Format into a consistent dictionary
-            info = {
-                'name': device_info.get('name'),
-                'sample_rate': device_info.get('defaultSampleRate'),
-                'channels': device_info.get('maxInputChannels'),
-                'index': device_index
-            }
-            
-            return info
-        except Exception as e:
-            logger.error(f"Error getting device info: {e}")
-            return None
-    
-    def _pyaudio_callback(self, in_data, frame_count, time_info, status):
-        """Callback function for PyAudio stream.
-        
-        This is called by PyAudio when audio data is available.
-        We convert the raw bytes to numpy array and call the user's callback.
-        
-        Args:
-            in_data: Raw audio data as bytes
-            frame_count: Number of frames in the buffer
-            time_info: Timing information
-            status: Status flags from PyAudio
-            
-        Returns:
-            tuple: (None, paContinue) to continue recording
-        """
-        try:
-            if self.callback and self.is_recording:
-                # Convert bytes to numpy array (assuming float32 format)
-                audio_data = np.frombuffer(in_data, dtype=np.float32)
-                
-                # Call the user's callback with the data
-                # The AudioRecorder expects (indata, frame_count, time_info, status)
-                callback_time_info = {'current_time': time.time()}
-                self.callback(audio_data, frame_count, callback_time_info, status)
-                
-            # Return None to indicate we didn't modify the data, and paContinue to continue
-            return (None, pyaudio.paContinue)
-        except Exception as e:
-            logger.error(f"Error in PyAudio callback: {e}")
-            return (None, pyaudio.paContinue)
-    
-    def start(self) -> bool:
-        """Start audio recording.
-        
-        Returns:
-            bool: True if started successfully
-        """
-        try:
-            if self.is_recording:
-                logger.warning("Recording already in progress")
-                return True
-            
-            # Initialize PyAudio if needed
-            if not self._py_audio:
-                self._py_audio = pyaudio.PyAudio()
-            
-            # Get device info to log
-            device_info = self._get_device_info()
-            device_index = device_info.get('index') if device_info else None
-            device_name = device_info.get('name') if device_info else "Default microphone"
-            
-            logger.info(f"Starting audio recording from device: {device_name} (index: {device_index})")
-            
-            # Open a stream for recording
-            self._stream = self._py_audio.open(
-                format=self._format,
-                channels=self.channels,
-                rate=int(self.sample_rate),
-                input=True,
-                output=False,
-                input_device_index=device_index,
-                frames_per_buffer=self._frames_per_buffer,
-                stream_callback=self._pyaudio_callback
-            )
-            
-            # Start the stream
-            self._stream.start_stream()
-            
-            # Mark as recording
-            self.is_recording = True
-            
-            logger.info("PyAudio recording started successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error starting audio capture: {e}", exc_info=True)
-            return False
-    
-    def stop(self) -> bool:
-        """Stop audio recording.
-        
-        Returns:
-            bool: True if stopped successfully
-        """
-        try:
-            if not self.is_recording:
-                logger.debug("Recording already stopped.")
-                return True
-                
-            logger.debug("Stopping PyAudio recording")
-            
-            # Stop and close the stream
-            if self._stream:
-                if self._stream.is_active():
-                    self._stream.stop_stream()
-                self._stream.close()
-                self._stream = None
-                logger.debug("Audio stream stopped and closed")
-            
-            # Reset recording flag
-            self.is_recording = False
-                
-            logger.info("Audio capture stopped successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error stopping audio capture: {e}")
-            return False
-    
-    def close(self) -> None:
-        """Close the audio stream and release resources.
-        
-        This method is provided for compatibility with the sounddevice interface.
-        It ensures proper cleanup of resources when the audio recorder is stopped.
-        """
-        try:
-            # Ensure recording is stopped
-            if self.is_recording:
-                self.stop()
-                
-            # Clean up PyAudio
-            if self._py_audio:
-                self._py_audio.terminate()
-                self._py_audio = None
-                logger.debug("PyAudio terminated and resources released")
+                logger.debug("PyAudio reference cleared (shared instance remains active)")
                     
         except Exception as e:
             logger.error(f"Error closing audio resources: {e}")
@@ -437,7 +288,7 @@ class AVAudioCapture:
         """
         try:
             if not self._py_audio:
-                self._py_audio = pyaudio.PyAudio()
+                self._py_audio = get_shared_pyaudio()
             
             # Get the default input device info
             device_info = self._py_audio.get_default_input_device_info()
@@ -469,7 +320,7 @@ class AVAudioCapture:
         try:
             # Initialize PyAudio if needed
             if not self._py_audio:
-                self._py_audio = pyaudio.PyAudio()
+                self._py_audio = get_shared_pyaudio()
                 
             # For compatibility with sounddevice API
             if kind != 'input' and kind != 'all':

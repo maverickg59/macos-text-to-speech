@@ -1,6 +1,9 @@
 import rumps
 import os
 import sys
+import gc
+import signal
+import atexit
 import subprocess
 import logging
 import platform
@@ -64,6 +67,7 @@ class OttotoneApp(rumps.App):
         self.hotkey_manager = None # Will be set up in _check_permissions_and_setup_features
         self.is_recording = False
         self.is_bundled = hasattr(sys, 'frozen') # Check if running bundled
+        self._shutdown_in_progress = False  # Flag to prevent multiple shutdowns
         
         # Initialize menu system
         self.menu_manager = None # Will be created after rumps.App initialization
@@ -71,6 +75,12 @@ class OttotoneApp(rumps.App):
         # Setup icon properties (self.icon, self.template, self.title)
         # and set the dock icon *before* initializing rumps.App
         self._setup_icon()
+
+        # Register signal handlers for graceful termination
+        self._setup_signal_handlers()
+        
+        # Register atexit handler for last-resort cleanup
+        atexit.register(self._cleanup_on_exit)
 
         super(OttotoneApp, self).__init__(
             name=APP_NAME,
@@ -91,9 +101,16 @@ class OttotoneApp(rumps.App):
 
         # Perform initial permission checks and setup features dependent on them
         self._check_permissions_and_setup_features()
+        
+        # Verify model loading after features are set up
+        self._verify_model_loaded()
 
         # Setup menu system after rumps.App is initialized
         self._setup_menu_system()
+        
+        # Schedule periodic memory checks if in development mode
+        if not self.is_bundled:
+            self._schedule_memory_check()
     
     def _setup_menu_system(self):
         """Set up the modular menu management system."""
@@ -183,6 +200,21 @@ class OttotoneApp(rumps.App):
         if self.audio_recorder:
             logger.info(f"Reloading audio recorder with new model: {model_name}")
             self.audio_recorder.reload_model()
+            
+    def _log_memory_state(self, label):
+        """Log current memory usage for debugging memory leaks."""
+        try:
+            import psutil
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            rss_mb = memory_info.rss / 1024 / 1024
+            vms_mb = memory_info.vms / 1024 / 1024
+            logger.info(f"Memory ({label}): {rss_mb:.2f} MB RSS, {vms_mb:.2f} MB VMS")
+        except ImportError:
+            logger.debug(f"Memory logging skipped ({label}): psutil not available")
+        except Exception as e:
+            logger.error(f"Error logging memory state: {e}")
+            pass
     
     def _on_output_action_changed(self, action: str):
         """Handle output action change event.
@@ -417,15 +449,48 @@ class OttotoneApp(rumps.App):
             self.menu_condition_prev_text_toggle.state = current_condition
 
     def _select_model_action(self, sender):
+        """Handle model selection from menu."""
         model_name = sender.title
         current_model = self.config.audio.get_selected_model()
         
         if model_name != current_model:
+            # Log memory before model change
+            self._log_memory_state("Before model change")
+            
             logger.info(f"Changing model from {current_model} to {model_name}")
             self.config.audio.set_selected_model(model_name)
-            logger.info(f"Model selected: {model_name}")
-            self.audio_recorder.reload_model() 
-            self._update_model_menu() 
+            
+            # Reload model in audio recorder with enhanced error handling
+            if self.audio_recorder:
+                try:
+                    logger.info(f"Initiating model reload: {current_model} -> {model_name}")
+                    if self.audio_recorder.reload_model():
+                        logger.info(f"Model successfully changed from {current_model} to {model_name}")
+                        # Force garbage collection after successful model change
+                        collected = gc.collect()
+                        logger.debug(f"Post-model-change GC collected {collected} objects")
+                    else:
+                        logger.error(f"Failed to reload model to {model_name}")
+                        self._send_notification(
+                            title=APP_NAME,
+                            subtitle="Model Change Failed",
+                            message=f"Could not load the {model_name} model. Falling back to previous model.",
+                            priority="high"
+                        )
+                except Exception as e:
+                    logger.error(f"Error during model reload: {e}", exc_info=True)
+                    self._send_notification(
+                        title=APP_NAME,
+                        subtitle="Model Change Error",
+                        message=f"An error occurred while changing models: {str(e)[:50]}...",
+                        priority="high"
+                    )
+            
+            # Update UI to reflect the change
+            self._update_model_menu()
+            
+            # Log memory after model change
+            self._log_memory_state("After model change") 
 
     def select_output_action_action(self, sender, action_name):
         self.config.ui.set_output_action(action_name)
@@ -541,6 +606,18 @@ class OttotoneApp(rumps.App):
         self._update_recording_ui_state(False) # Error, so not actively recording
         self._send_notification(APP_NAME, "Transcription Error", error_message, priority="high")
 
+    def _process_transcribing_status(self, data):
+        logger.debug("Transcribing audio...")
+        # No UI updates needed
+
+    def _process_processing_transcription(self, data):
+        logger.info("Processing transcription...")
+        # Could update UI to show processing state if desired
+
+        # Update menu item text
+        if hasattr(self, 'menu_record_stop'):
+            self.menu_record_stop.title = MENU_STOP
+
     def _process_recording_started(self, data):
         logger.info("APP: Recording started.")
         self.is_recording = True
@@ -630,6 +707,7 @@ class OttotoneApp(rumps.App):
             "recording_started": self._process_recording_started,
             "recording_stopped": self._process_recording_stopped,
             "transcribing": self._process_transcribing_status,
+            "processing_transcription": self._process_processing_transcription,
             "silence_detected_stopping": self._process_silence_detected_stopping,
             "no_audio_recorded": self._process_no_audio_recorded,
             "silence_limit_reached": self._process_silence_limit_reached,
@@ -655,17 +733,32 @@ class OttotoneApp(rumps.App):
     def quit_app(self, sender):
         """Handle quit action from menu."""
         logger.info("Quit clicked. Cleaning up...")
-        if self.audio_recorder:
-            logger.info("Shutting down AudioRecorder...")
-            self.audio_recorder.shutdown()
-        
-        if self.hotkey_manager:
-            logger.info("Stopping HotkeyManager listener...")
-            self.hotkey_manager.stop_listening()
-
+        try:
+            # Notify the background audio thread to exit
+            if self.audio_recorder:
+                logger.info("Shutting down AudioRecorder...")
+                self.audio_recorder.shutdown()
+            
+            # Stop hotkey listener
+            if self.hotkey_manager:
+                logger.info("Stopping HotkeyManager listener...")
+                self.hotkey_manager.stop_listening()
+                
+            # Ensure PyAudio is properly terminated
+            try:
+                from ottotone.av_audio import terminate_shared_pyaudio
+                terminate_shared_pyaudio()
+                logger.debug("Terminated shared PyAudio instance during shutdown")
+            except Exception as e:
+                logger.warning(f"Error terminating PyAudio: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            
         logger.info("Quitting application.")
+        
         if self.config.ui.get_setting("show_notifications", True) and self.is_bundled:
-             # Only show quit notification if bundled, as it's noisy in dev
+            # Only show quit notification if bundled, as it's noisy in dev
             self._send_notification(title=APP_NAME, subtitle="Application Stopped", message="Ottotone has stopped.", priority="normal")
         rumps.quit_application()
 
@@ -1037,6 +1130,120 @@ class OttotoneApp(rumps.App):
             # Only log important notifications in dev mode
             logger.debug(f"Notification suppressed (dev mode): {subtitle} - {message[:30]}{'...' if len(message) > 30 else ''}")
         # Low priority notifications are completely suppressed unless explicitly needed
+
+    def _setup_signal_handlers(self):
+        """Register signal handlers for graceful termination."""
+        # Register handlers for common termination signals
+        for sig in [signal.SIGINT, signal.SIGTERM]:
+            try:
+                # Use a simple lambda that calls our handler
+                signal.signal(sig, lambda signum, frame: self._handle_exit_signal(signum, frame))
+                logger.debug(f"Registered signal handler for {sig}")
+            except Exception as e:
+                logger.error(f"Failed to register signal handler for {sig}: {e}")
+
+    def _handle_exit_signal(self, signum, frame):
+        """Handle termination signals for graceful shutdown."""
+        logger.warning(f"Received signal {signum}. Initiating emergency cleanup...")
+        try:
+            # Prevent multiple shutdown attempts
+            if self._shutdown_in_progress:
+                logger.warning("Shutdown already in progress, ignoring signal")
+                return
+                
+            self._shutdown_in_progress = True
+            
+            # Perform critical cleanup
+            if hasattr(self, 'audio_recorder') and self.audio_recorder:
+                logger.info("Emergency shutdown: Cleaning up audio recorder resources")
+                self.audio_recorder.shutdown()
+                
+            # Clean up any other resources as needed
+            if hasattr(self, 'hotkey_manager') and self.hotkey_manager:
+                logger.info("Emergency shutdown: Stopping hotkey listener")
+                self.hotkey_manager.stop_listening()
+                
+            logger.info("Emergency cleanup completed successfully")
+        except Exception as e:
+            logger.error(f"Error during emergency cleanup: {e}", exc_info=True)
+        finally:
+            # Force exit - we're responding to a termination signal
+            logger.info("Exiting application after signal handler cleanup")
+            sys.exit(0)
+    
+    def _cleanup_on_exit(self):
+        """Last-resort cleanup when Python interpreter exits."""
+        # This is registered with atexit and will run when Python is shutting down
+        if self._shutdown_in_progress:
+            logger.debug("Atexit handler: Shutdown already in progress, skipping")
+            return
+            
+        logger.warning("Atexit handler: Performing last-resort cleanup")
+        try:
+            self._shutdown_in_progress = True
+            # Only clean up resources that haven't been cleaned up already
+            if hasattr(self, 'audio_recorder') and self.audio_recorder:
+                if hasattr(self.audio_recorder, 'model') and self.audio_recorder.model:
+                    logger.warning("Model still loaded during exit, forcing cleanup")
+                    self.audio_recorder._unload_current_model()
+                    gc.collect()
+        except Exception as e:
+            # Just log errors - can't raise exceptions in atexit handlers
+            logger.error(f"Error in atexit handler: {e}")
+    
+    def _verify_model_loaded(self):
+        """Verify that the model is loaded properly at startup."""
+        if not hasattr(self, 'audio_recorder') or not self.audio_recorder:
+            logger.warning("Cannot verify model: AudioRecorder not initialized")
+            return
+            
+        try:
+            if not hasattr(self.audio_recorder, 'model') or not self.audio_recorder.model:
+                logger.warning("Model not loaded during initialization, loading now")
+                self.audio_recorder._load_model()
+                if self.audio_recorder.model:
+                    logger.info("Model loaded successfully during verification")
+                else:
+                    logger.error("Failed to load model during verification")
+            else:
+                logger.info("Model verification: Model already loaded")
+        except Exception as e:
+            logger.error(f"Error verifying model: {e}", exc_info=True)
+    
+    def _schedule_memory_check(self):
+        """Schedule periodic memory checks to detect leaks (dev mode only)."""
+        try:
+            # Only run memory checks in dev mode
+            import psutil
+            import threading
+            
+            def _memory_check_task():
+                try:
+                    process = psutil.Process()
+                    memory_info = process.memory_info()
+                    rss_mb = memory_info.rss / 1024 / 1024
+                    vms_mb = memory_info.vms / 1024 / 1024
+                    logger.debug(f"Memory usage: {rss_mb:.2f} MB RSS, {vms_mb:.2f} MB VMS")
+                    
+                    # Optional: force GC if memory exceeds threshold (e.g., 1 GB)
+                    if rss_mb > 1024:  # 1 GB threshold
+                        logger.warning("Memory usage high, running garbage collection")
+                        collected = gc.collect()
+                        logger.info(f"Forced GC collected {collected} objects")
+                    
+                    # Schedule the next check in 5 minutes if app is still running
+                    if not self._shutdown_in_progress:
+                        threading.Timer(300, _memory_check_task).start()
+                except Exception as e:
+                    logger.error(f"Error in memory check: {e}")
+            
+            # Start the first check after 5 minutes
+            threading.Timer(300, _memory_check_task).start()
+            logger.debug("Scheduled periodic memory checks")
+        except ImportError:
+            logger.warning("Could not import psutil, memory checks disabled")
+        except Exception as e:
+            logger.error(f"Error setting up memory checks: {e}")
 
 if __name__ == '__main__':
     logger.info(f"Starting {APP_NAME}...")

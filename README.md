@@ -39,8 +39,6 @@ Ottotone includes a smart build script that automatically detects dependencies a
     uv pip install -e ".[dev]"
     ```
 
-    Note: The app now uses native macOS AVFoundation APIs for audio recording, eliminating the need for external dependencies like PortAudio.
-
 2.  **Run the Build Script:**
 
     ```bash

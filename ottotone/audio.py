@@ -198,14 +198,32 @@ class AudioRecorder:
                 # Log memory before unloading
                 self._log_memory_usage("Before model unload")
                 
-                # Delete model and run garbage collection
+                # Explicitly clear any cached data or internal components
+                # that might hold references
+                if hasattr(self.model, 'feature_extractor') and self.model.feature_extractor is not None:
+                    logger.debug("Clearing feature extractor references")
+                    del self.model.feature_extractor
+                
+                if hasattr(self.model, 'decoder') and self.model.decoder is not None:
+                    logger.debug("Clearing decoder references")
+                    del self.model.decoder
+                
+                # Delete the model and clear reference
+                logger.debug("Deleting model object")
                 del self.model
                 self.model = None
                 
-                # Force a full garbage collection
-                logger.debug("Running garbage collection cycle...")
-                collected = gc.collect()
-                logger.debug(f"Garbage collection finished - collected {collected} objects")
+                # Force multiple full garbage collection cycles to handle any circular references
+                logger.debug("Running garbage collection cycles...")
+                total_collected = 0
+                for i in range(2):  # Run GC multiple times
+                    collected = gc.collect()
+                    total_collected += collected
+                    logger.debug(f"GC cycle {i+1} collected {collected} objects")
+                    if collected == 0 and i > 0:
+                        break  # No more objects to collect
+                
+                logger.debug(f"Garbage collection finished - collected {total_collected} objects in total")
                 
                 # Log memory after unloading and GC
                 self._log_memory_usage("After model unload and GC")
@@ -524,29 +542,77 @@ class AudioRecorder:
         # Log memory before shutdown
         self._log_memory_usage("Before shutdown")
         
+        # Stop any active recording first
+        if self.is_recording:
+            logger.debug("Stopping active recording before shutdown")
+            self.stop_recording(reason="shutdown")
+        
         # Signal any ongoing transcription to abort
         self._abort_transcription = True
         
         # Signal audio manager thread to exit and wait for it
         self.command_queue.put({"command": "exit"})
         if self.audio_manager_thread and self.audio_manager_thread.is_alive():
-            logger.debug("Waiting for audio manager thread to exit (timeout: 3s)")
-            self.audio_manager_thread.join(timeout=3.0)
+            logger.debug("Waiting for audio manager thread to exit...")
+            self.audio_manager_thread.join(timeout=3.0)  # Increased timeout
             if self.audio_manager_thread.is_alive():
-                logger.warning("Audio manager thread did not exit within timeout")
+                logger.warning("Audio manager thread did not exit cleanly")
+            else:
+                logger.debug("Audio manager thread exited successfully")
         
-        # Unload and cleanup model resources
+        # Release model resources
         if self._unload_current_model():
             logger.debug("Model resources released successfully")
         else:
             logger.warning("Failed to properly release model resources")
+            # Try one more time with more aggressive cleanup
+            logger.debug("Attempting aggressive model cleanup")
+            try:
+                if hasattr(self, 'model') and self.model is not None:
+                    # Clear all attributes
+                    for attr in dir(self.model):
+                        if not attr.startswith('__') and not callable(getattr(self.model, attr)):
+                            try:
+                                setattr(self.model, attr, None)
+                            except:
+                                pass
+                    del self.model
+                    self.model = None
+                    gc.collect()
+            except Exception as e:
+                logger.error(f"Error in aggressive cleanup: {e}")
         
-        # Final cleanup
+        # Clear any remaining audio data
+        self.audio_data = None
+        
+        # Final cleanup - multiple passes
         logger.debug("Running final garbage collection")
-        collected = gc.collect()
-        logger.debug(f"Final GC collected {collected} objects")
+        total_collected = 0
+        for i in range(3):  # Multiple GC passes
+            collected = gc.collect()
+            total_collected += collected
+            logger.debug(f"GC cycle {i+1} collected {collected} objects")
+            if collected == 0 and i > 0:
+                break
+        logger.debug(f"Final GC collected {total_collected} objects in total")
         
         # Log memory after shutdown
         self._log_memory_usage("After shutdown")
+        
+        # Force cleanup of multiprocessing resources to prevent semaphore leaks
+        try:
+            import multiprocessing
+            if hasattr(multiprocessing, 'resource_tracker') and hasattr(multiprocessing.resource_tracker, '_resource_tracker'):
+                logger.debug("Cleaning up multiprocessing resource tracker")
+                try:
+                    # Clear all resources being tracked
+                    multiprocessing.resource_tracker._resource_tracker.clear()
+                    logger.debug("Successfully cleared resource tracker")
+                except Exception as e:
+                    logger.warning(f"Could not clear resource tracker: {e}")
+        except ImportError:
+            logger.debug("Multiprocessing module not available for resource cleanup")
+        except Exception as e:
+            logger.warning(f"Error during multiprocessing cleanup: {e}")
         
         logger.info("Audio recorder shutdown complete")
