@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=68.0.0", "wheel>=0.42.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,24 +15,25 @@ license-files = ["LICENSE"]
 
 # Core dependencies
 dependencies = [
-    "appdirs>=1.4.4",         # For cross-platform config directories
-    "faster-whisper>=0.9.0",  # Speech-to-text
-    "sounddevice>=0.4.8",     # Audio recording (latest as of 2023)
-    "numpy>=2.0.0",           # Audio processing (latest major as of 2024)
-    "torch>=2.3.0",           # PyTorch for faster-whisper (latest stable as of 2024)
-    "torchaudio>=2.3.0",      # Audio processing for PyTorch
-    "ctranslate2>=4.0.0",     # CTranslate2 for faster-whisper (latest stable)
-    "tokenizers>=0.15.0",     # Tokenization for faster-whisper
-    "huggingface-hub>=0.20.0", # For downloading models (latest stable)
-    "onnxruntime>=1.17.0",     # ONNX runtime for faster-whisper
-    "pyobjc-core>=10.2",         # PyObjC core (update version as needed)
-    "pyobjc-framework-Cocoa>=10.2", # For AppKit, Foundation (update version as needed)
-    "pyobjc-framework-Quartz>=10.2", # For event taps, CoreGraphics (update version as needed)
-    "pyobjc-framework-ApplicationServices>=10.2", # For Accessibility APIs (update version as needed)
-    "pyobjc-framework-AVFoundation>=10.2",  # For audio/video, microphone permissions (update version as needed)
-    "rumps>=0.4.0",           # Menu bar app for macOS
-    "py2app>=0.28.8",         # Bundle as a macOS app (latest stable)
-    "psutil>=5.9.0"           # Memory monitoring
+    "appdirs>=1.4.4",
+    "faster-whisper>=0.10.1",
+    "av>=11.0.0",         # PyAV for audio processing in faster-whisper
+    "numpy>=2.0.0",
+    "torch>=2.3.1",
+    "torchaudio>=2.3.1",
+    "ctranslate2>=4.1.0",
+    "tokenizers>=0.15.2",
+    "huggingface-hub>=0.22.0",
+    "onnxruntime>=1.17.0",
+    "pyobjc-core>=10.2",
+    "pyobjc-framework-Cocoa>=10.2",
+    "pyobjc-framework-Quartz>=10.2",
+    "pyobjc-framework-ApplicationServices>=10.2",
+    "pyobjc-framework-AVFoundation>=10.2",
+    "pyobjc-framework-CoreServices>=10.2",
+    "rumps>=0.4.0",
+    "py2app>=0.28.8",
+    "psutil>=5.9.8"
 ]
 
 # Development and testing dependencies
@@ -42,21 +43,76 @@ dev = [
     "pytest-cov>=5.0.0",
     "black>=24.0.0",
     "isort>=5.13.0",
-    "mypy>=1.9.0"
+    "mypy>=1.9.0",
+    "py2app>=0.28.8"
 ]
 
-# Development-only optional dependencies
-# Note: The macOS-specific dependencies have been moved to core dependencies
-# since this is a macOS-only application.
+[tool.py2app]
+application = ["ottotone/__main__.py"]
+name = "Ottotone"
+datafiles = ["README.md", "LICENSE"]
 
-# These are kept for reference but not used in the macOS app
-windows = [
-    "pywin32>=306"        # Windows system integration (latest stable)
+# All py2app options need to be properly formatted in TOML
+[tool.py2app.options]
+argv_emulation = false
+iconfile = "ottotone/resources/icon.icns"
+
+# No external frameworks needed as we use native AVFoundation
+frameworks = []
+
+# Set DYLD_LIBRARY_PATH at runtime
+site_packages = true
+dylib_excludes = [
+    "libgcc_s.1.dylib",
+    "libstdc++.6.dylib",
+    "libSystem.dylib",
+    "libportaudio.2.dylib",
+    "libportaudiocpp.0.dylib",
+    "libportaudio.dylib"
 ]
 
-linux = [
-    "pycairo>=1.26.0",    # GTK integration (latest stable)
-    "pygobject>=3.48.0"    # GTK integration (latest stable)
+[tool.py2app.options.plist]
+CFBundleName = "Ottotone"
+CFBundleDisplayName = "Ottotone"
+CFBundleIdentifier = "com.ottotone.speech-to-text"
+CFBundleVersion = "0.1.0"
+CFBundleShortVersionString = "0.1.0"
+LSBackgroundOnly = true
+LSUIElement = true
+NSHumanReadableCopyright = "© 2025 Chris White"
+NSMicrophoneUsageDescription = "Ottotone needs microphone access to record and transcribe your speech."
+
+[tool.py2app.options.packages]
+include = [
+    "rumps",
+    "faster_whisper",
+    "av",
+    "numpy",
+    "torch",
+    "torchaudio",
+    "ctranslate2",
+    "tokenizers",
+    "huggingface_hub",
+    "pyobjc",
+    "AppKit",
+    "Quartz",
+    "Foundation",
+    "ApplicationServices",
+    "AVFoundation",
+    "CoreServices",
+    "CoreAudio"
+]
+
+[tool.py2app.options.excludes]
+packages = [
+    "tkinter",
+    "matplotlib",
+    "PyQt5",
+    "PyQt6",
+    "PySide2",
+    "PySide6",
+    "wx",
+    "sounddevice"
 ]
 
 # Entry points for the command-line interface
@@ -73,7 +129,7 @@ include-package-data = true
 # Linting and formatting configuration
 [tool.black]
 line-length = 88
-target-version = ['py38']
+target-version = ['py312']
 include = '\.pyi?$'
 
 [tool.isort]
@@ -81,7 +137,7 @@ profile = "black"
 line_length = 88
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

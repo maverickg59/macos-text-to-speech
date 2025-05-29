@@ -1,5 +1,4 @@
 from faster_whisper import WhisperModel
-import sounddevice as sd
 import threading
 import time
 import queue
@@ -10,6 +9,9 @@ import os
 import sys
 import gc
 import psutil
+
+# Import our AVFoundation-based audio module instead of sounddevice
+from .av_audio import create_input_stream, query_devices
 
 from .config import AppConfig
 
@@ -285,8 +287,16 @@ class AudioRecorder:
                         logger.debug("DEBUG AUDMAN: Already recording, ignoring start command.")
                         continue
                     
-                    if sd is None:
-                        logger.error("ERROR AUDMAN: sounddevice not available, cannot start recording.")
+                    # AVFoundation is always available on macOS, but check for errors
+                    try:
+                        # Simple check to verify AVFoundation is available
+                        device_info = query_devices(None, 'input')
+                        if not device_info:
+                            logger.error("ERROR AUDMAN: AVFoundation audio not available, cannot start recording.")
+                            self._safe_callback({"status": "error", "message": "Audio device error"})
+                            continue
+                    except Exception as e:
+                        logger.error(f"ERROR AUDMAN: AVFoundation error: {e}")
                         self._safe_callback({"status": "error", "message": "Audio device error"})
                         continue
 
@@ -305,15 +315,18 @@ class AudioRecorder:
                     try:
                         # Query sample rate each time in case default device changes
                         # TODO: Make device selectable and store its sample rate
-                        device_info = sd.query_devices(None, 'input')
+                        device_info = query_devices(None, 'input')
+                        # Use the first device if it's a list
+                        if isinstance(device_info, list) and device_info:
+                            device_info = device_info[0]
                         samplerate = int(device_info['default_samplerate'])
                         logger.info(f"INFO: Audio device initialized. Device: {device_info['name']}, Sample rate: {samplerate}Hz")
                         
-                        current_stream = sd.InputStream(
+                        current_stream = create_input_stream(
                             samplerate=samplerate, 
                             channels=1,
-                            callback=self._recording_callback,
-                            dtype='float32'
+                            callback=self._recording_callback
+                            # AVFoundation implementation uses float32 by default
                         )
                         current_stream.start()
                         self.is_recording = True # Critical: Set true *after* stream starts
