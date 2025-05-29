@@ -29,7 +29,7 @@ class AudioConfig:
     DEFAULT_VAD_FILTER = True
     DEFAULT_TEMPERATURE = 0.0
     DEFAULT_PATIENCE = 1.0
-    DEFAULT_CONDITION_ON_PREVIOUS_TEXT = False
+    DEFAULT_CONDITION_ON_PREVIOUS_TEXT = True
     
     def __init__(self, storage_manager):
         """Initialize with a ConfigStorageManager instance.
@@ -56,8 +56,11 @@ class AudioConfig:
                 "beam_size": self.DEFAULT_BEAM_SIZE,
                 "vad_filter": self.DEFAULT_VAD_FILTER,
                 "vad_parameters": {
-                    "min_silence_duration_ms": 250,
-                    "threshold": 0.35
+                    # Optimized VAD parameters for better transcription quality
+                    # - 300ms allows for natural pauses while still filtering non-speech
+                    # - 0.3 threshold provides a good balance between precision and recall
+                    "min_silence_duration_ms": 300,
+                    "threshold": 0.3
                 },
                 "temperature": self.DEFAULT_TEMPERATURE,
                 "patience": self.DEFAULT_PATIENCE,
@@ -130,17 +133,13 @@ class AudioConfig:
         return self._get_audio_setting("silence_duration_seconds", self.DEFAULT_SILENCE_DURATION_SECONDS)
     
     def set_silence_duration_seconds(self, value):
-        """Set the silence duration in seconds."""
+        """Set the silence duration in seconds.
+        
+        This only affects the automatic recording stop feature,
+        and does not impact VAD parameters used during transcription.
+        """
         duration = float(value)
         self._set_audio_setting("silence_duration_seconds", duration)
-        
-        # Update the VAD parameters to be consistent with silence duration
-        # Only if VAD filter is enabled
-        if self.get_vad_filter():
-            vad_params = self.get_vad_parameters()
-            # Convert seconds to milliseconds and use a smaller value for VAD than manual detection
-            vad_params["min_silence_duration_ms"] = min(250, int(duration * 1000 / 4))
-            self.set_vad_parameters(vad_params)
     
     # Model selection methods
     def get_selected_model(self):

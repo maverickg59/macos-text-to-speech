@@ -20,10 +20,10 @@ MENU_TEMPERATURE = "Temperature"
 MENU_CONDITION_ON_PREV_TEXT = "Condition on Previous Text"
 
 # Default values for settings
-SILENCE_THRESHOLDS_DB = [-10.0, -20.0, -30.0, -40.0, -50.0]
-MAX_SILENCE_DURATIONS_S = [1.0, 1.5, 2.0, 3.0, 4.0]
+SILENCE_THRESHOLDS_DB = [-10.0, -20.0, -25.0, -30.0, -35.0, -40.0, -50.0]
+MAX_SILENCE_DURATIONS_S = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 5.0, 10.0]
 BEAM_SIZES = [1, 2, 3, 5, 8]
-TEMPERATURES = [0.0, 0.2, 0.4, 0.6, 0.8]
+TEMPERATURES = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 # Default transcription languages
 TRANSCRIPTION_LANGUAGES = {
@@ -39,57 +39,6 @@ TRANSCRIPTION_LANGUAGES = {
     "Russian": "ru",
     "Chinese": "zh"
 }
-
-# --- Constants ---
-# APP_NAME = "Ottotone"
-# DEFAULT_TITLE = "OTT"
-# MENU_ICON_FILE = "ottotone.png"
-# APP_ICON_FILE = "ottotone.icns"
-# RESOURCES_DIR = "resources"
-# PLATFORM_DARWIN = "Darwin"
-
-# AVAILABLE_MODELS = ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"]
-
-# MENU_RECORD = "Record"
-# MENU_SELECT_MODEL = "Select Model"
-# MENU_OUTPUT_ACTION = "Output Action"
-# MENU_COPY_TO_CLIPBOARD = "Copy to Clipboard"
-# MENU_PASTE_AT_CURSOR = "Paste at Cursor"
-# MENU_CHECK_PERMISSIONS = "Check Permissions"
-# MENU_OPEN_SETTINGS = "Settings"
-# MENU_QUIT = "Quit Ottotone"
-
-# MENU_SILENCE_THRESHOLD = "Silence Threshold (dB)"
-# MENU_MAX_SILENCE_DURATION = "Max Silence Duration (s)"
-# MENU_TRANSCRIPTION_LANGUAGE = "Transcription Language"
-# MENU_COMPUTE_TYPE = "Compute Type (Quality/Speed)"
-# MENU_BEAM_SIZE = "Beam Size"
-# MENU_VAD_FILTER = "VAD Filter"
-# MENU_TEMPERATURE = "Temperature"
-# MENU_CONDITION_ON_PREV_TEXT = "Condition on Previous Text"
-
-# DEFAULT_SILENCE_THRESHOLD_DB = -30.0
-# DEFAULT_MAX_SILENCE_DURATION_S = 2.0
-# DEFAULT_LANGUAGE = "en"
-# DEFAULT_COMPUTE_TYPE = "int8"
-# DEFAULT_BEAM_SIZE = 1
-# DEFAULT_VAD_FILTER = False
-# DEFAULT_TEMPERATURE = 0.0
-# DEFAULT_CONDITION_ON_PREV_TEXT = False
-
-# SILENCE_THRESHOLDS_DB = [-20.0, -25.0, -30.0, -35.0, -40.0, -50.0]
-# MAX_SILENCE_DURATIONS_S = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 5.0, 10.0]
-# TRANSCRIPTION_LANGUAGES = {
-#     "Auto Detect": None, "English": "en", "Spanish": "es", "French": "fr", 
-#     "German": "de", "Italian": "it", "Portuguese": "pt", "Russian": "ru",
-#     "Japanese": "ja", "Korean": "ko", "Chinese": "zh"
-# }
-# DEFAULT_COMPUTE_TYPE = "int8"
-# BEAM_SIZES = [1, 2, 3, 5]
-# TEMPERATURE_VALUES = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-
-# OUTPUT_ACTION_CLIPBOARD = "clipboard"
-# OUTPUT_ACTION_PASTE_AT_CURSOR = "paste_at_cursor"
 
 class SettingsMenu(BaseMenuComponent):
     """Menu component for application settings.
@@ -259,9 +208,26 @@ class SettingsMenu(BaseMenuComponent):
     def _update_temperature_state(self):
         """Update temperature menu checkmarks."""
         current_temp = self.config.audio.get_temperature()
-        for temp, item in self.temperature_items.items():
-            # Use explicit state values: 1 for checked, 0 for unchecked
-            item.state = 1 if abs(temp - current_temp) < 0.1 else 0  # Use small epsilon for float comparison
+        
+        # Use a much smaller epsilon (0.01) for float comparison since we have temperatures at 0.1 increments
+        epsilon = 0.01
+        
+        # First, uncheck all items
+        for item in self.temperature_items.values():
+            item.state = 0
+            
+        # Find exact match or closest temperature if no exact match
+        if current_temp in self.temperature_items:
+            # Exact match found
+            self.temperature_items[current_temp].state = 1
+        else:
+            # Find closest match
+            closest_temp = min(self.temperature_items.keys(), key=lambda x: abs(x - current_temp))
+            if abs(closest_temp - current_temp) < epsilon:
+                self.temperature_items[closest_temp].state = 1
+                
+        logger.debug(f"Updated temperature menu state to match {current_temp}")
+        
     
     def _update_vad_filter_state(self):
         """Update VAD filter toggle state."""

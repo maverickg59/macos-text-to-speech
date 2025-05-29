@@ -29,7 +29,10 @@ dependencies = [
     "pyobjc-framework-Cocoa>=10.2", # For AppKit, Foundation (update version as needed)
     "pyobjc-framework-Quartz>=10.2", # For event taps, CoreGraphics (update version as needed)
     "pyobjc-framework-ApplicationServices>=10.2", # For Accessibility APIs (update version as needed)
-    "pyobjc-framework-AVFoundation>=10.2"  # For audio/video, microphone permissions (update version as needed)
+    "pyobjc-framework-AVFoundation>=10.2",  # For audio/video, microphone permissions (update version as needed)
+    "rumps>=0.4.0",           # Menu bar app for macOS
+    "py2app>=0.28.8",         # Bundle as a macOS app (latest stable)
+    "psutil>=5.9.0"           # Memory monitoring
 ]
 
 # Development and testing dependencies
@@ -42,12 +45,11 @@ dev = [
     "mypy>=1.9.0"
 ]
 
-# Platform-specific dependencies
-macos = [
-    "rumps>=0.4.0",       # Menu bar app for macOS
-    "py2app>=0.28.8"      # Bundle as a macOS app (latest stable)
-]
+# Development-only optional dependencies
+# Note: The macOS-specific dependencies have been moved to core dependencies
+# since this is a macOS-only application.
 
+# These are kept for reference but not used in the macOS app
 windows = [
     "pywin32>=306"        # Windows system integration (latest stable)
 ]

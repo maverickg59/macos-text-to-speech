@@ -8,6 +8,8 @@ import numpy as np
 import logging
 import os
 import sys
+import gc
+import psutil
 
 from .config import AppConfig
 
@@ -88,10 +90,22 @@ class AudioRecorder:
         
         if new_model_size != old_model_size:
             logger.info(f"Model change: {old_model_size} -> {new_model_size}")
+            
+            # Track memory before model change
+            self._log_memory_usage("Before model change")
+            
+            # Unload old model first
+            if not self._unload_current_model():
+                logger.warning("Failed to properly unload previous model, continuing with load anyway")
+            
+            # Update model size and load new model
             self.model_size = new_model_size
             if self._load_model():
                 logger.info(f"Model {new_model_size} loaded successfully")
                 self._load_transcription_parameters()
+                
+                # Final memory usage after model change complete
+                self._log_memory_usage("After model change complete")
                 return True
             else:
                 logger.error(f"Failed to load {new_model_size}, reverting to {old_model_size}")
@@ -99,6 +113,7 @@ class AudioRecorder:
                 self._load_model()
                 return False
         else:
+            logger.info(f"Model unchanged ({old_model_size}), updating parameters only")
             self._load_transcription_parameters()
             return True
 
@@ -128,6 +143,10 @@ class AudioRecorder:
 
         mono_data = indata.mean(axis=1) if indata.ndim > 1 else indata
         dbfs = self._calculate_dbfs(mono_data)
+        
+        # Log audio levels periodically to debug silence detection
+        if int(current_time * 10) % 20 == 0:  # Log approximately every 2 seconds
+            logger.debug(f"Audio level: {dbfs:.2f} dB, Threshold: {self.silence_threshold_db:.2f} dB, State: {self.current_recording_state}")
 
         if self.current_recording_state == self.STATE_WAITING_FOR_SPEECH:
             if dbfs >= self.silence_threshold_db:
@@ -147,6 +166,7 @@ class AudioRecorder:
                         return 
 
                     logger.info(f"Max silence duration ({self.silence_duration}s) met after speech. Queuing stop command.")
+                    logger.info(f"Silence details - Start: {self._silence_start_time:.2f}, Current: {current_time:.2f}, Duration: {current_time - self._silence_start_time:.2f}s")
                     self._stop_triggered_by_silence = True # Mark that silence is the trigger
                     self.command_queue.put({"command": "stop", "reason": "silence_detected"})
             else: # Sound is present (dbfs >= self.silence_threshold_db)
@@ -154,13 +174,53 @@ class AudioRecorder:
                     logger.debug(f"Sound re-detected (dBFS: {dbfs:.2f}), resetting silence timer.")
                 self._silence_start_time = None # Reset silence timer as sound is present
 
-    def _load_model(self):
+    def _log_memory_usage(self, tag=""):
+        """Log current memory usage.
+        
+        Args:
+            tag: Optional tag to include in the log message
+        """
         try:
-            # Release existing model if present
-            if self.model is not None:
-                logger.info("Releasing existing model resources...")
+            process = psutil.Process(os.getpid())
+            memory_info = process.memory_info()
+            prefix = f"[{tag}] " if tag else ""
+            logger.info(f"{prefix}Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB RSS, {memory_info.vms / 1024 / 1024:.2f} MB VMS")
+        except Exception as e:
+            logger.warning(f"Failed to log memory usage: {e}")
+    
+    def _unload_current_model(self):
+        """Unload the current model and release resources."""
+        if self.model is not None:
+            logger.info("Unloading existing model and releasing resources...")
+            try:
+                # Log memory before unloading
+                self._log_memory_usage("Before model unload")
+                
+                # Delete model and run garbage collection
                 del self.model
                 self.model = None
+                
+                # Force a full garbage collection
+                logger.debug("Running garbage collection cycle...")
+                collected = gc.collect()
+                logger.debug(f"Garbage collection finished - collected {collected} objects")
+                
+                # Log memory after unloading and GC
+                self._log_memory_usage("After model unload and GC")
+                
+                # Give system a moment to clean up resources
+                time.sleep(0.2)
+                
+                return True
+            except Exception as e:
+                logger.error(f"Error unloading model: {e}", exc_info=True)
+                return False
+        return True  # No model to unload
+    
+    def _load_model(self):
+        try:            
+            # Release existing model if present
+            self._unload_current_model()
             
             # Ensure model parameters are set
             if not hasattr(self, 'model_size') or not self.model_size:
@@ -187,7 +247,10 @@ class AudioRecorder:
                 else:
                     logger.warning(f"Bundled models directory not found, using fallback path")
                     force_local_files_only = True
-        
+            
+            # Log memory before loading new model
+            self._log_memory_usage("Before model load")
+            
             logger.info(f"Loading Whisper model '{self.model_size}' (device: {self.device})")
             self.model = WhisperModel(
                 model_size_or_path=self.model_size,
@@ -196,6 +259,10 @@ class AudioRecorder:
                 download_root=effective_model_path,
                 local_files_only=force_local_files_only
             )
+            
+            # Log memory after loading new model
+            self._log_memory_usage("After model load")
+            
             logger.info(f"Whisper model '{self.model_size}' loaded successfully")
             return True
         except Exception as e:
@@ -440,6 +507,33 @@ class AudioRecorder:
     def shutdown(self):
         """Shut down the audio recorder."""
         logger.info("Shutting down audio recorder")
+        
+        # Log memory before shutdown
+        self._log_memory_usage("Before shutdown")
+        
+        # Signal any ongoing transcription to abort
         self._abort_transcription = True
+        
+        # Signal audio manager thread to exit and wait for it
         self.command_queue.put({"command": "exit"})
-        self.audio_manager_thread.join(timeout=3.0)
+        if self.audio_manager_thread and self.audio_manager_thread.is_alive():
+            logger.debug("Waiting for audio manager thread to exit (timeout: 3s)")
+            self.audio_manager_thread.join(timeout=3.0)
+            if self.audio_manager_thread.is_alive():
+                logger.warning("Audio manager thread did not exit within timeout")
+        
+        # Unload and cleanup model resources
+        if self._unload_current_model():
+            logger.debug("Model resources released successfully")
+        else:
+            logger.warning("Failed to properly release model resources")
+        
+        # Final cleanup
+        logger.debug("Running final garbage collection")
+        collected = gc.collect()
+        logger.debug(f"Final GC collected {collected} objects")
+        
+        # Log memory after shutdown
+        self._log_memory_usage("After shutdown")
+        
+        logger.info("Audio recorder shutdown complete")

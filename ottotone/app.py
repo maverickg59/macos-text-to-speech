@@ -118,11 +118,8 @@ class OttotoneApp(rumps.App):
         # Add component-managed menu items
         full_menu.extend(menu_items)
         
-        # Add quit item at the end
-        full_menu.extend([
-            rumps.separator,
-            rumps.MenuItem("Quit", callback=rumps.quit_application)
-        ])
+        # Only add separator - rumps will automatically add a Quit item
+        full_menu.append(rumps.separator)
         
         # Assign the complete menu
         self.menu = full_menu
@@ -462,7 +459,7 @@ class OttotoneApp(rumps.App):
             self._check_permissions_and_setup_features() # This will guide the user if permissions are missing
             if not self.audio_recorder:
                 logger.error("AudioRecorder still not available after permission check. Recording cannot start.")
-                self._send_notification(APP_NAME, "Recording Failed", "Microphone access is required. Please grant permission and try again.")
+                self._send_notification(APP_NAME, "Recording Failed", "Microphone access is required. Please grant permission and try again.", priority="high")
                 self._update_recording_ui_state(is_recording=False, reason="AudioRecorder unavailable")
                 return
             else:
@@ -499,22 +496,22 @@ class OttotoneApp(rumps.App):
 
         if not final_text:
             logger.info("Transcription result is empty.")
-            self._send_notification(APP_NAME, "Transcription Empty", "No speech detected or result was empty.")
+            self._send_notification(APP_NAME, "Transcription Empty", "No speech detected or result was empty.", priority="normal")
             return
 
         if output_action == OUTPUT_ACTION_CLIPBOARD:
             try:
                 subprocess.run("pbcopy", text=True, input=final_text, check=True)
                 logger.info("Text copied to clipboard.")
-                self._send_notification(APP_NAME, "Copied to Clipboard", final_text)
+                self._send_notification(APP_NAME, "Copied to Clipboard", final_text, priority="low")
             except Exception as e_clipboard:
                 logger.error(f"Failed to copy to clipboard: {e_clipboard}", exc_info=True)
-                self._send_notification(APP_NAME, "Copy Error", str(e_clipboard))
+                self._send_notification(APP_NAME, "Copy Error", str(e_clipboard), priority="high")
         elif output_action == OUTPUT_ACTION_PASTE_AT_CURSOR:
             if self.permissions_manager.check_accessibility_permission(prompt_if_needed=False):
                 logger.info("Pasting text at cursor.")
                 paste_text_at_cursor(final_text)
-                self._send_notification(APP_NAME, "Pasted at Cursor", final_text)
+                self._send_notification(APP_NAME, "Pasted at Cursor", final_text, priority="low")
             else:
                 logger.warning("Paste at cursor failed: Accessibility permission not granted. Falling back to clipboard.")
                 # Guide user specifically for Accessibility
@@ -530,19 +527,19 @@ class OttotoneApp(rumps.App):
                 try:
                     subprocess.run("pbcopy", text=True, input=final_text, check=True)
                     logger.info("Text copied to clipboard as fallback.")
-                    self._send_notification(APP_NAME, "Paste Failed: Permission Needed", "Accessibility permission required. Text copied to clipboard instead.")
+                    self._send_notification(APP_NAME, "Paste Failed: Permission Needed", "Accessibility permission required. Text copied to clipboard instead.", priority="high")
                 except Exception as e_clipboard_fallback:
                     logger.error(f"Fallback to clipboard failed: {e_clipboard_fallback}", exc_info=True)
-                    self._send_notification(APP_NAME, "Action Failed", "Accessibility permission needed and could not copy to clipboard.")
+                    self._send_notification(APP_NAME, "Action Failed", "Accessibility permission needed and could not copy to clipboard.", priority="high")
         else:
             logger.error(f"Unknown output action: {output_action}")
-            self._send_notification(APP_NAME, "Error", f"Unknown output action: {output_action}")
+            self._send_notification(APP_NAME, "Error", f"Unknown output action: {output_action}", priority="high")
 
     def _process_error_status(self, data):
         error_message = data.get("message", "An unknown error occurred.")
         logger.error(f"Transcription error: {error_message}")
         self._update_recording_ui_state(False) # Error, so not actively recording
-        self._send_notification(APP_NAME, "Transcription Error", error_message)
+        self._send_notification(APP_NAME, "Transcription Error", error_message, priority="high")
 
     def _process_recording_started(self, data):
         logger.info("APP: Recording started.")
@@ -591,7 +588,7 @@ class OttotoneApp(rumps.App):
     def _process_no_audio_recorded(self, data):
         logger.info("No audio was recorded or audio was too short.")
         self._update_recording_ui_state(False)
-        self._send_notification(APP_NAME, "No Audio", "No audio was recorded.")
+        self._send_notification(APP_NAME, "No Audio", "No audio was recorded.", priority="normal")
 
     def _process_silence_limit_reached(self, data):
         reason = data.get("reason", "unknown")
@@ -669,7 +666,7 @@ class OttotoneApp(rumps.App):
         logger.info("Quitting application.")
         if self.config.ui.get_setting("show_notifications", True) and self.is_bundled:
              # Only show quit notification if bundled, as it's noisy in dev
-            self._send_notification(title=APP_NAME, subtitle="Application Stopped", message="Ottotone has stopped.")
+            self._send_notification(title=APP_NAME, subtitle="Application Stopped", message="Ottotone has stopped.", priority="normal")
         rumps.quit_application()
 
     def _start_hotkey_listener(self):
@@ -983,7 +980,8 @@ class OttotoneApp(rumps.App):
             self._send_notification(
                 title=APP_NAME, 
                 subtitle="Audio System Problem", 
-                message=f"Could not initialize audio recording. This might be a permission issue or a problem with your audio device."
+                message=f"Could not initialize audio recording. This might be a permission issue or a problem with your audio device.",
+                priority="high"
             ) 
 
     def _setup_hotkey_manager(self):
@@ -1008,23 +1006,37 @@ class OttotoneApp(rumps.App):
                 self._send_notification(
                     title=APP_NAME, 
                     subtitle="Hotkey Activation Failed", 
-                    message="Could not activate global hotkeys. Ensure 'Input Monitoring' is enabled and restart Ottotone if needed."
+                    message="Could not activate global hotkeys. Ensure 'Input Monitoring' is enabled and restart Ottotone if needed.",
+                    priority="high"
                 )
         except Exception as e:
             logger.error(f"Failed to initialize or start HotkeyManager: {e}", exc_info=True)
             # self.permissions_status[PERM_KEY_INPUT_MONITORING] is already False
-            self._send_notification(title=APP_NAME, subtitle="Hotkey Error", message="An error occurred setting up hotkeys. They will be disabled.")
+            self._send_notification(title=APP_NAME, subtitle="Hotkey Error", message="An error occurred setting up hotkeys. They will be disabled.", priority="high")
 
-    def _send_notification(self, title, subtitle, message):
-        """Sends a notification if running bundled, otherwise logs it for dev mode.""" # TODO: Check if subtitle is the right param name for rumps
-        if self.is_bundled:
+    def _send_notification(self, title, subtitle, message, priority="normal"):
+        """Sends a notification based on priority and app state.
+        
+        Args:
+            title: Notification title
+            subtitle: Notification subtitle
+            message: Notification message
+            priority: Priority level - 'high' (always show), 'normal' (show if bundled), 'low' (rarely show)
+        """
+        # For high priority (errors, warnings), always show/log
+        # For normal priority, only show when bundled and log when in dev mode
+        # For low priority (success messages), don't notify unless explicitly needed
+        
+        if priority == "high" or (priority == "normal" and self.is_bundled):
             try:
                 rumps.notification(title=title, subtitle=subtitle, message=message)
-                logger.debug(f"Sent notification: Title='{title}', Subtitle='{subtitle}', Message='{message}'")
+                logger.debug(f"Notification: {subtitle} - {message[:30]}{'...' if len(message) > 30 else ''}")
             except Exception as e:
-                logger.error(f"Failed to send rumps notification: {e}", exc_info=True)
-        else:
-            logger.info(f"DEV MODE: Notification suppressed. Title='{title}', Subtitle='{subtitle}', Message='{message}'")
+                logger.error(f"Failed to send notification: {e}")
+        elif priority == "normal" and not self.is_bundled:
+            # Only log important notifications in dev mode
+            logger.debug(f"Notification suppressed (dev mode): {subtitle} - {message[:30]}{'...' if len(message) > 30 else ''}")
+        # Low priority notifications are completely suppressed unless explicitly needed
 
 if __name__ == '__main__':
     logger.info(f"Starting {APP_NAME}...")

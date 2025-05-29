@@ -9,7 +9,6 @@ from .audio import AudioRecorder
 from .config import AppConfig
 from .hotkeys import HotkeyManager
 from .permissions import PermissionsManager
-from .settings import SettingsManager
 
 __version__ = "0.0.1"
 
@@ -19,6 +18,5 @@ __all__ = [
     'AppConfig',
     'HotkeyManager',
     'PermissionsManager',
-    'SettingsManager',
     '__version__',
 ]

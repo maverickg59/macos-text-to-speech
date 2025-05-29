@@ -4,6 +4,8 @@ import os
 import json
 import appdirs
 import logging
+from ottotone.config.audio_config import AudioConfig
+from ottotone.app import OUTPUT_ACTION_CLIPBOARD
 
 APP_NAME = "Ottotone"
 APP_AUTHOR = "OttotoneDev" # Can be your name or organization
@@ -81,29 +83,36 @@ class ConfigManager:
         self._save_settings()
 
     def get_selected_model(self):
-        return self.get_setting("selected_model")
+        # Use the AudioConfig constant for consistency
+        return self.get_setting("selected_model", AudioConfig.DEFAULT_SELECTED_MODEL)
 
     def get_hotkey(self):
         return self.get_setting("hotkey")
 
-    def get_silence_threshold_db(self, default=-30.0):
-        return self.get_setting("silence_threshold_db", default)
+    def get_silence_threshold_db(self):
+        # Use the AudioConfig constant for consistency
+        return self.get_setting("silence_threshold_db", AudioConfig.DEFAULT_SILENCE_THRESHOLD_DB)
 
-    def get_silence_duration_seconds(self, default=2.0):
-        return self.get_setting("silence_duration_seconds", default)
+    def get_silence_duration_seconds(self):
+        # Use the AudioConfig constant for consistency
+        return self.get_setting("silence_duration_seconds", AudioConfig.DEFAULT_SILENCE_DURATION_SECONDS)
 
-    def get_compute_type(self, default="int8"):
-        return self.get_setting("compute_type", default)
+    def get_compute_type(self):
+        # Use the AudioConfig constant for consistency
+        return self.get_setting("compute_type", AudioConfig.DEFAULT_COMPUTE_TYPE)
 
     def get_transcription_param(self, param_name, default=None):
         key = f"transcription_{param_name}"
         return self.get_setting(key, default)
 
     def get_models_path(self):
-        return self.get_setting("models_path")
+        # Default path uses user cache directory
+        default_path = os.path.join(appdirs.user_cache_dir(APP_NAME, APP_AUTHOR), "models")
+        return self.get_setting("models_path", default_path)
 
     def get_output_action(self):
-        return self.get_setting("output_action", "clipboard") 
+        # Use the imported constant for default output action
+        return self.get_setting("output_action", OUTPUT_ACTION_CLIPBOARD) 
 
     def set_output_action(self, action):
         if action in ["clipboard", "paste_at_cursor"]:
