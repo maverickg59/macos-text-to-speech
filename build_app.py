@@ -29,7 +29,7 @@ from setuptools import setup
 
 OPTIONS = {
     'argv_emulation': False,
-    'iconfile': 'ottotone/resources/icon.icns',
+    'iconfile': 'src/resources/icon.icns',
     'plist': {
         'CFBundleName': 'Ottotone',
         'CFBundleDisplayName': 'Ottotone',
@@ -79,7 +79,7 @@ OPTIONS = {
 }
 
 setup(
-    app=['ottotone/__main__.py'],
+    app=['src/__main__.py'],
     data_files=['README.md', 'LICENSE'],
     options={'py2app': OPTIONS},
     setup_requires=['py2app'],

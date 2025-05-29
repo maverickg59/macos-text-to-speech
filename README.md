@@ -1,11 +1,22 @@
-# Ottotone - STT
+# Ottotone - Speech-to-Text Menubar App for macOS
 
-Ottotone is a macOS app that provides quick speech-to-text transcription using Faster Whisper. Record audio via global hotkey with auto-stop on silence detection. Transcribe to clipboard or paste at cursor.
+Ottotone is a powerful macOS menubar application that provides quick and efficient speech-to-text transcription using the faster-whisper library. It enables users to seamlessly record audio via a global hotkey, automatically stop recording when silence is detected, and output the transcribed text either to the clipboard or directly to the cursor position.
 
-## Prerequisites
+## Key Features
 
-- Python 3.12 or higher
-- UV package manager
+- **Global Hotkey Support**: Trigger recording with a customizable global hotkey (default: Command+Shift+Space)
+- **Intelligent Silence Detection**: Automatically stops recording after detecting silence following speech
+- **Multiple Whisper Models**: Choose from different model sizes (tiny, base, small, medium, large) to balance speed vs. accuracy
+- **Flexible Output Options**: Select between "Copy to Clipboard" or "Paste at Cursor" modes
+- **Comprehensive Permission Management**: Built-in handling of microphone, accessibility, and input monitoring permissions
+- **Configurable Transcription Settings**: Adjust silence threshold, max silence duration, temperature, and VAD filtering
+- **Native macOS Integration**: Uses native macOS APIs through pyobjc for menubar integration and keyboard events
+
+## System Requirements
+
+- macOS 10.15 (Catalina) or later
+- Python 3.12 or higher for development
+- UV package manager (recommended) or pip
 
 ## Running the Application
 
@@ -25,7 +36,7 @@ Ottotone is a macOS app that provides quick speech-to-text transcription using F
 3.  **Run the Application:**
 
     ```bash
-    python3 -m ottotone
+    python3 -m src
     ```
 
 ## Building for macOS (.app)
@@ -85,5 +96,50 @@ The build script creates an application bundle that includes:
   - **VAD Filter:** Enable/disable Voice Activity Detection to filter out non-speech audio segments
 
 - **Permissions:** The app checks for necessary permissions (Microphone, Accessibility, Input Monitoring for hotkeys) and guides the user to grant them via System Settings if they are missing.
+
+## Architecture
+
+Ottotone follows a modular architecture with clean separation of concerns between different components:
+
+### Core Components
+
+- **OttotoneApp**: Main application class that orchestrates all components
+- **AudioRecorder**: Handles audio recording and transcription using faster-whisper
+- **PermissionsManager**: Manages and checks for required system permissions
+- **HotkeyManager**: Handles global hotkey detection via Quartz event taps
+- **AppConfig**: Manages application configuration and persistence
+
+### Menu System
+
+The menubar interface uses a component-based architecture where each functional area has its own menu component:
+
+- **MenuManager**: Central coordinator for all menu components
+- **ModelMenu**: Manages Whisper model selection
+- **OutputMenu**: Handles output action selection (clipboard/paste)
+- **SettingsMenu**: Provides access to application settings
+
+### Technical Notes
+
+- **MPS Limitation**: faster-whisper does not support MPS (Apple Silicon) acceleration, so the application forces CPU mode for transcription on all Macs
+- **Component Independence**: Components communicate through well-defined interfaces and callbacks, minimizing tight coupling
+- **Permission Handling**: The application guides users through obtaining permissions with detailed instructions and direct links to System Settings
+
+## Development Guidelines
+
+1. **Coding Standards**
+   - Follow PEP 8 for Python code style
+   - Use absolute imports to avoid circular dependencies
+   - Document classes and methods with detailed docstrings
+
+2. **Testing**
+   - Strive for a sensible level of code coverage as close to 100% as possible using unit tests
+   - Use vitest for unit testing
+   - Tests should be placed in the `__tests__` directory only
+   - Never modify source code to make tests pass
+
+3. **Error Handling**
+   - Use proper logging at appropriate levels (debug, info, warning, error)
+   - Gracefully handle failures in user permissions or hardware access
+   - Provide user-friendly error messages and guidance
 
 ---

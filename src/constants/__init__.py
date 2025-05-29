@@ -1,0 +1,67 @@
+"""Central constants module for Ottotone.
+
+This module provides centralized access to all constants used throughout the application.
+Import constants from this module to ensure consistent usage across the codebase.
+
+Example:
+    from src.constants import APP_NAME, OUTPUT_ACTION_CLIPBOARD, MENU_RECORD
+"""
+
+# Export all constants from the individual modules
+from .app_constants import *
+from .menu_constants import *
+from .output_constants import *
+from .permission_constants import *
+from .audio_constants import *
+from .config_constants import *
+from .paste_constants import *
+from .hotkey_constants import *
+
+# Define the __all__ variable to explicitly specify what should be imported with 'from constants import *'
+__all__ = [
+    # App constants
+    'APP_NAME', 'APP_AUTHOR', 'APP_VERSION', 'APP_LICENSE',
+    'DEFAULT_TITLE', 'MENU_ICON_FILE', 'APP_ICON_FILE', 'RESOURCES_DIR',
+    'PLATFORM_DARWIN', 'DEV_MODE',
+    
+    # Menu constants
+    'MENU_RECORD', 'MENU_STOP', 'MENU_CHECK_PERMISSIONS', 'MENU_QUIT',
+    'MENU_SELECT_MODEL', 'MENU_OUTPUT_ACTION', 'MENU_COPY_TO_CLIPBOARD', 'MENU_PASTE_AT_CURSOR',
+    'MENU_SETTINGS', 'MENU_SILENCE_THRESHOLD', 'MENU_MAX_SILENCE_DURATION',
+    'MENU_TRANSCRIPTION_LANGUAGE', 'MENU_BEAM_SIZE', 'MENU_VAD_FILTER',
+    'MENU_TEMPERATURE', 'MENU_CONDITION_ON_PREV_TEXT', 'MENU_PERMISSIONS',
+    
+    # Output constants
+    'OUTPUT_ACTION_CLIPBOARD', 'OUTPUT_ACTION_PASTE_AT_CURSOR', 'DEFAULT_OUTPUT_ACTION',
+    
+    # Permission constants
+    'PERM_KEY_MICROPHONE', 'PERM_KEY_ACCESSIBILITY', 'PERM_KEY_INPUT_MONITORING',
+    'PRIVACY_SETTINGS_URL_BASE', 'URL_MICROPHONE', 'URL_ACCESSIBILITY', 'URL_INPUT_MONITORING',
+    'AUTH_STATUS_AUTHORIZED', 'AUTH_STATUS_NOT_DETERMINED', 'AUTH_STATUS_DENIED', 'AUTH_STATUS_RESTRICTED',
+    
+    # Audio constants
+    'AVAILABLE_WHISPER_MODELS', 'DEFAULT_WHISPER_MODEL',
+    'DEFAULT_SILENCE_THRESHOLD_DB', 'DEFAULT_SILENCE_DURATION', 'DEFAULT_MIN_RECORDING_TIME',
+    'AUDIO_STATE_IDLE', 'AUDIO_STATE_WAITING_FOR_SPEECH', 'AUDIO_STATE_SPEECH_DETECTED',
+    'WHISPER_DEVICE_CPU', 'WHISPER_COMPUTE_INT8',
+    'DEFAULT_LANGUAGE', 'DEFAULT_BEAM_SIZE', 'DEFAULT_VAD_FILTER', 'DEFAULT_TEMPERATURE',
+    'DEFAULT_CONDITION_ON_PREVIOUS_TEXT', 'TRANSCRIPTION_LANGUAGES',
+    
+    # Paste constants
+    'KEY_CODE_V', 'KEY_CODE_COMMAND', 'EVENT_FLAG_COMMAND', 'PASTE_DELAY_SEC',
+    
+    # Hotkey constants
+    'MODIFIER_CMD', 'MODIFIER_SHIFT',
+    'DEFAULT_HOTKEY_KEY_CODE', 'DEFAULT_HOTKEY_MODIFIERS',
+    'HOTKEY_CONFIG_KEY', 'HOTKEY_KEY_CODE', 'HOTKEY_MODIFIERS',
+    
+    # Config constants
+    'CONFIG_FILE_NAME', 'CONFIG_DIR', 'CONFIG_FILE_PATH',
+    'CONFIG_DOMAIN_UI', 'CONFIG_DOMAIN_AUDIO', 'CONFIG_DOMAIN_HOTKEYS',
+    'CONFIG_KEY_SELECTED_MODEL', 'CONFIG_KEY_OUTPUT_ACTION',
+    'CONFIG_KEY_SILENCE_THRESHOLD', 'CONFIG_KEY_SILENCE_DURATION',
+    'CONFIG_KEY_LANGUAGE', 'CONFIG_KEY_BEAM_SIZE', 'CONFIG_KEY_VAD_FILTER',
+    'CONFIG_KEY_VAD_PARAMETERS', 'CONFIG_KEY_TEMPERATURE',
+    'CONFIG_KEY_CONDITION_ON_PREVIOUS_TEXT', 'CONFIG_KEY_RECORDING_TOGGLE_HOTKEY',
+    'DEFAULT_VAD_PARAMETERS'
+]
