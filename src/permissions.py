@@ -12,21 +12,53 @@ the necessary permissions with detailed instructions and direct links to System 
 
 import platform
 import logging
+import os
 import sys
 
 # Import centralized constants
 from src.constants import (
-    APP_NAME,
-    PERM_KEY_MICROPHONE, PERM_KEY_ACCESSIBILITY, PERM_KEY_INPUT_MONITORING,
-    PRIVACY_SETTINGS_URL_BASE, URL_MICROPHONE, URL_ACCESSIBILITY, URL_INPUT_MONITORING,
-    AUTH_STATUS_AUTHORIZED, AUTH_STATUS_NOT_DETERMINED, AUTH_STATUS_DENIED, AUTH_STATUS_RESTRICTED
+    APP_NAME, PERM_KEY_MICROPHONE, PERM_KEY_ACCESSIBILITY, PERM_KEY_INPUT_MONITORING, AUTH_STATUS_AUTHORIZED, AUTH_STATUS_DENIED
 )
 
 logger = logging.getLogger(__name__)
 
+# Import these at module level to ensure they're available everywhere
+NSURL = None
+NSFont = None
+NSColor = None
+NSRunningApplication = None
+NSAlert = None
+NSWorkspace = None
+NSApplicationActivateIgnoringOtherApps = None
+NSApplicationActivateAllWindows = None
+NSImage = None
+NSMutableParagraphStyle = None
+NSTextField = None
+NSMutableAttributedString = None
+
 if platform.system() == "Darwin":
-    from AppKit import NSRunningApplication, NSAlert, NSWorkspace, NSApplicationActivateIgnoringOtherApps
-    from Foundation import NSURL
+    from AppKit import NSRunningApplication, NSAlert, NSWorkspace, NSApplicationActivateIgnoringOtherApps, NSImage
+    from AppKit import NSTextField, NSFont, NSMakeSize, NSApplication, NSTextField
+    from Foundation import NSURL, NSMutableAttributedString
+    
+    # Application activation options
+    NSApplicationActivateAllWindows = 1 << 0  # Activating all windows of the application
+    
+    # Make these available at module level
+    globals()["NSURL"] = NSURL
+    globals()["NSFont"] = NSFont
+    globals()["NSColor"] = NSColor
+    globals()["NSRunningApplication"] = NSRunningApplication
+    globals()["NSAlert"] = NSAlert
+    globals()["NSWorkspace"] = NSWorkspace
+    globals()["NSApplicationActivateIgnoringOtherApps"] = NSApplicationActivateIgnoringOtherApps
+    globals()["NSImage"] = NSImage
+    globals()["NSMutableParagraphStyle"] = NSMutableParagraphStyle
+    globals()["NSTextField"] = NSTextField
+    globals()["NSMutableAttributedString"] = NSMutableAttributedString
+    
+    # Application activation options
+    NSApplicationActivateAllWindows = 1 << 0  # Activating all windows of the application
     from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
     try:
         from AVFoundation import AVCaptureDevice, AVMediaTypeAudio, AVAuthorizationStatusAuthorized, \
@@ -115,6 +147,7 @@ class PermissionsManager:
 
     def guide_user_to_grant_permissions(self, missing_permissions_details):
         """Guides the user to grant permissions based on a provided list of missing ones.
+        Creates a completely custom alert dialog with guaranteed centered icon positioning.
 
         Args:
             missing_permissions_details: List of dictionaries with permission details
@@ -123,51 +156,150 @@ class PermissionsManager:
         if self.os_type != "Darwin" or not missing_permissions_details:
             return
 
-        first_missing_permission_url = missing_permissions_details[0]['url']
-        title = "Ottotone: Action Required"
+        # Get the URLs for all missing permissions
+        permission_urls = [p['url'] for p in missing_permissions_details]
+        first_permission_url = permission_urls[0] if permission_urls else None
         
-        # Build instructions for each missing permission
-        instruction_lines = []
-        for i, perm_info in enumerate(missing_permissions_details):
-            current_instruction = perm_info['instruction']
+        # Create a simplified, user-friendly permission guide
+        title = f"{APP_NAME} Needs Permissions"
+        
+        # Clear and concise permission explanations
+        permission_explanations = {
+            PERM_KEY_MICROPHONE: {
+                "title": "Microphone Access",
+                "reason": "To record and transcribe speech",
+                "instruction": "System Settings → Privacy & Security → Microphone → Ottotone"
+            },
+            PERM_KEY_ACCESSIBILITY: {
+                "title": "Accessibility Access",
+                "reason": "To paste text at the cursor location",
+                "instruction": "System Settings → Privacy & Security → Accessibility → Ottotone"
+            },
+            PERM_KEY_INPUT_MONITORING: {
+                "title": "Input Monitoring",
+                "reason": "To detect keyboard shortcuts while in background",
+                "instruction": "System Settings → Privacy & Security → Input Monitoring → Ottotone"
+            }
+        }
+        
+        # Special handling for Input Monitoring in dev mode
+        if not self.is_running_bundled():
+            permission_explanations[PERM_KEY_INPUT_MONITORING]["instruction"] = (
+                "System Settings → Privacy & Security → Input Monitoring → " 
+                "Enable for your Terminal or IDE (VSCode, iTerm, etc.)"
+            )
+        
+        # Construct message parts for the dialog content
+        message_parts = []
+        
+        # Add a header if there are multiple permissions needed
+        if len(missing_permissions_details) > 1:
+            secondary_permissions = []
+            for i, perm_info in enumerate(missing_permissions_details):
+                if i > 0:  # Skip the first one
+                    perm_key = perm_info['key']
+                    if perm_key in permission_explanations:
+                        secondary_permissions.append(permission_explanations[perm_key]["title"])
             
-            # Special handling for Input Monitoring in dev mode
-            if perm_info['key'] == PERM_KEY_INPUT_MONITORING and not self.is_running_bundled():
-                current_instruction = (
-                    f"System Settings > Privacy & Security > Input Monitoring.\n"
-                    f"Enable Input Monitoring for your terminal or IDE (Terminal, iTerm, VSCode, etc.)."
-                )
-                
-            instruction_lines.append(f"Permission {i+1} ({perm_info['name']}):\n{current_instruction}")
+            if secondary_permissions:
+                message_parts.append(f"After granting the first permission, you'll also need:\n{', '.join(secondary_permissions)}")
+                message_parts.append("---")  # Short divider
         
-        # Compose alert text
-        informative_text = "Ottotone needs the following permission(s) to function correctly:\n\n"
-        informative_text += "\n\n".join(instruction_lines)
-        informative_text += "\n\nClick 'Open System Settings' to go to the first missing permission, or 'Later' to dismiss."
-        informative_text += "\nAfter granting Input Monitoring permission, a restart of Ottotone is recommended."
+        # Add each permission's details with clear formatting
+        for i, perm_info in enumerate(missing_permissions_details):
+            perm_key = perm_info['key']
+            if perm_key in permission_explanations:
+                explanation = permission_explanations[perm_key]
+                
+                # Add a separator between permissions if needed
+                if i > 0:
+                    message_parts.append("---")  # Short divider
+                
+                # Format each permission section clearly with proper capitalization
+                message_parts.append(f"{explanation['title']}\n\nWhy:\n  {explanation['reason']}\n\nHow:\n  {explanation['instruction']}")
+        
+        # Join all parts with appropriate spacing (minimal)
+        message_text = "\n\n".join(message_parts)
 
-        # Create and configure alert
+        # Create a custom alert dialog using NSAlert with proper styling
         alert = NSAlert.alloc().init()
         alert.setMessageText_(title)
-        alert.setInformativeText_(informative_text)
-        alert.addButtonWithTitle_("Open System Settings")
-        alert.addButtonWithTitle_("Later")
+        alert.setInformativeText_(message_text)
+        alert.addButtonWithTitle_("Open Settings")
+        alert.addButtonWithTitle_("Not Now")
         alert.setAlertStyle_(1)  # NSAlertStyleWarning
+
+        # Load and set the app icon with fixed dimensions
+        icon_path = "/Users/christopherwhite/Develop/projects/ottobots/ottotone/src/resources/ottotone.icns"
+        icon = None
+        if os.path.exists(icon_path):
+            icon = NSImage.alloc().initWithContentsOfFile_(icon_path)
+            if icon:
+                # Force the icon to a consistent size to help with centering
+                icon.setSize_(NSMakeSize(64, 64))
+                # Apply the icon to the alert
+                alert.setIcon_(icon)
+                logger.debug("Set custom icon for permissions dialog")
+
+        # Force the application to the foreground to ensure visibility
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         
-        # Ensure alert is shown on top
-        NSRunningApplication.currentApplication().activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+        # Open the system settings immediately, alongside the alert
+        if first_permission_url:
+            logger.info(f"Opening permission settings: {first_permission_url}")
+            url = NSURL.URLWithString_(first_permission_url)
+            NSWorkspace.sharedWorkspace().openURL_(url)
 
         # Show alert and handle response
         response = alert.runModal()
 
-        if response == 1000:  # First button: Open System Settings
-            if first_missing_permission_url:
-                logger.info(f"Opening permission settings: {first_missing_permission_url}")
-                url = NSURL.URLWithString_(first_missing_permission_url)
-                NSWorkspace.sharedWorkspace().openURL_(url)
-            else:
-                # Fallback to general Privacy & Security (shouldn't happen)
-                url = NSURL.URLWithString_("x-apple.systempreferences:com.apple.preference.security")
-                NSWorkspace.sharedWorkspace().openURL_(url)
-        else:
+        # Log if user clicked "Not Now"
+        if response != 1000:  # 1000 = first button ("Open Settings")
             logger.debug("User deferred permission settings")
+            
+    def _show_follow_up_instructions(self, remaining_permissions):
+        """Shows a follow-up alert with instructions for remaining permissions.
+        
+        Args:
+            remaining_permissions: List of remaining permission details to guide the user through
+        """
+        if not remaining_permissions:
+            return
+            
+        # Create a simple follow-up alert
+        alert = NSAlert.alloc().init()
+        
+        # Apply the same icon as the main permissions dialog
+        icon_path = "/Users/christopherwhite/Develop/projects/ottobots/ottotone/src/resources/ottotone.icns"
+        if os.path.exists(icon_path):
+            try:
+                icon = NSImage.alloc().initWithContentsOfFile_(icon_path)
+                if icon:
+                    logger.debug("Applied icon to follow-up dialog")
+                    alert.setIcon_(icon)
+            except Exception as e:
+                logger.warning(f"Error loading icon for follow-up dialog: {e}")
+                
+        alert.setMessageText_("Additional Permissions Needed")
+        
+        # Create a list of the remaining permissions
+        perm_names = [p['name'] for p in remaining_permissions]
+        perm_list = ", ".join(perm_names)
+        
+        informative_text = f"After granting the first permission, you'll also need to enable: {perm_list}\n\n"
+        informative_text += "You can access these from the same Privacy & Security section in System Settings."
+        
+        alert.setInformativeText_(informative_text)
+        alert.addButtonWithTitle_("Got It")
+        alert.setAlertStyle_(0)  # NSAlertStyleInformational
+        
+        # Force the application to the foreground with the highest possible level
+        app = NSRunningApplication.currentApplication()
+        app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows)
+        
+        # Small delay to ensure activation takes effect
+        import time
+        time.sleep(0.5)
+        
+        # Show the alert
+        alert.runModal()

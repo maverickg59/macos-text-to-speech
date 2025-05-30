@@ -23,7 +23,7 @@ from src.hotkeys import HotkeyManager
 from src.permissions import PermissionsManager
 
 # Application metadata
-__version__ = "0.1.0"  # First production-ready version
+__version__ = "0.0.1"  # First production-ready version
 __author__ = "Ottobots Team"
 __license__ = "MIT"
 
